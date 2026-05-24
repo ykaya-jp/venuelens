@@ -28,6 +28,7 @@ import {
   requireVenueAccess,
 } from "@/server/auth";
 import { publishRealtimeEvent, resolveActor } from "@/lib/realtime/publish";
+import { getCoupleMembers } from "@/lib/couple-members";
 
 /**
  * Ensure a `public.users` row exists for the current Supabase auth user.
@@ -406,15 +407,9 @@ export async function getCoupleChecklistAnswers(venueId: string): Promise<{
   const user = await requireUser();
   const { projectId } = await requireVenueAccess(user.id, venueId);
 
-  // Resolve project members (= same shape as getCoupleRatings)
-  const members = await prisma.projectMember.findMany({
-    where: { projectId, acceptedAt: { not: null } },
-    select: {
-      userId: true,
-      user: { select: { name: true, email: true } },
-    },
-  });
-  const other = members.find((m) => m.userId !== user.id);
+  // Audit P1-25: shared helper with getCoupleRatings — same shape, same
+  // accepted_at filter, single source of truth for "who is in the couple".
+  const { other } = await getCoupleMembers(projectId, user.id);
 
   // Single round-trip: pull every project member's answers for this venue
   // then split by userId in JS. Matches the pattern in `getCoupleRatings`
@@ -446,7 +441,7 @@ export async function getCoupleChecklistAnswers(venueId: string): Promise<{
   return {
     ownScoreByItemId: buildMap(user.id),
     partnerScoreByItemId: other ? buildMap(other.userId) : null,
-    partnerName: other ? other.user?.name ?? other.user?.email ?? null : null,
+    partnerName: other ? other.name ?? other.email ?? null : null,
   };
 }
 
