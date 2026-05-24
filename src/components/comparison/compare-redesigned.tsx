@@ -1126,27 +1126,61 @@ function DimensionCell({
   // Shared dual-dot row — rendered under both the "no score" and
   // "has score" branches so the viewer can see "夫=3 / 妻=未評価"
   // even when the consolidated avg is blank.
+  // Audit P1-12 / P1-26: when exactly one side has graded, surface the
+  // other side as "未" with a hollow ring instead of hiding it. This
+  // makes the asymmetry legible — readers can tell apart "no rating
+  // exists yet" (= both null, dualDot suppressed) and "only one of
+  // us graded this" (= one bg-filled chip + one hollow "未" chip),
+  // which were indistinguishable in the prior single-dot rendering.
   const dualDot =
     ownScore !== null || partnerScore !== null ? (
       <div className="mt-0.5 flex items-center justify-center gap-1.5 text-[9.5px] tabular-nums">
-        {ownScore !== null && (
-          <span className="inline-flex items-center gap-0.5 text-[color:var(--primary)]">
-            <span
-              aria-hidden
-              className="h-1.5 w-1.5 rounded-full bg-[var(--primary)]"
-            />
-            {ownScore.toFixed(1)}
-          </span>
-        )}
-        {partnerScore !== null && (
-          <span className="inline-flex items-center gap-0.5 text-secondary">
-            <span
-              aria-hidden
-              className="h-1.5 w-1.5 rounded-full bg-secondary"
-            />
-            {partnerScore.toFixed(1)}
-          </span>
-        )}
+        <span
+          className="inline-flex items-center gap-0.5 text-[color:var(--primary)]"
+          aria-label={
+            ownScore !== null
+              ? `自分の評価 ${ownScore.toFixed(1)}`
+              : "自分はまだ未評価"
+          }
+        >
+          <span
+            aria-hidden
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              ownScore !== null
+                ? "bg-[var(--primary)]"
+                : "border border-[color-mix(in_oklab,var(--primary)_45%,transparent)]",
+            )}
+          />
+          {ownScore !== null ? (
+            ownScore.toFixed(1)
+          ) : (
+            <span className="opacity-55">未</span>
+          )}
+        </span>
+        <span
+          className="inline-flex items-center gap-0.5 text-secondary"
+          aria-label={
+            partnerScore !== null
+              ? `相手の評価 ${partnerScore.toFixed(1)}`
+              : "相手はまだ未評価"
+          }
+        >
+          <span
+            aria-hidden
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              partnerScore !== null
+                ? "bg-secondary"
+                : "border border-[color-mix(in_oklab,var(--secondary)_45%,transparent)]",
+            )}
+          />
+          {partnerScore !== null ? (
+            partnerScore.toFixed(1)
+          ) : (
+            <span className="opacity-55">未</span>
+          )}
+        </span>
       </div>
     ) : null;
 
