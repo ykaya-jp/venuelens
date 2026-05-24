@@ -453,11 +453,28 @@ async function RatingPartnerOverlay({
   );
 }
 
+/** Audit P2-29: resolve "誰が作成した見積か" to a viewer-aware label.
+ *  Returns null when the author is unknown (legacy row, deleted user)
+ *  so EstimateXRay simply hides the line — better than printing a
+ *  stale id. "自分" wins over the partnerName match so reflexive
+ *  recognition stays instant. */
+function resolveEstimateAuthorLabel(
+  author: { id: string; name: string | null; email: string | null } | null,
+  viewerUserId: string,
+): string | null {
+  if (!author) return null;
+  if (author.id === viewerUserId) return "自分が入力";
+  const display = author.name?.trim() || author.email?.split("@")[0] || null;
+  return display ? `${display} さんが入力` : null;
+}
+
 async function EstimatesContent({ venueId }: { venueId: string }) {
+  const user = await requireUser();
   const [estimates, reviewEstimateAgg] = await Promise.all([
     getVenueEstimates(venueId),
     getVenueReviewEstimateAggregate(venueId),
   ]);
+  const currentUserId = user.id;
 
   // Render EstimateSection even when empty — its internal empty-state CTA
   // invites the user to add their first estimate. Previously we returned
@@ -527,6 +544,10 @@ async function EstimatesContent({ venueId }: { venueId: string }) {
           }))}
           totalEstimate={estimates[0].total}
           predictedFinal={estimates[0].predictedFinal}
+          authorLabel={resolveEstimateAuthorLabel(
+            estimates[0].author,
+            currentUserId,
+          )}
         />
       )}
 

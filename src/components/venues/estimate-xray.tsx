@@ -30,6 +30,12 @@ interface EstimateXRayProps {
   }>;
   totalEstimate: number;
   predictedFinal: number | null;
+  /** Audit P2-29: human-readable label for who created this estimate row.
+   *  Null when the row was created before Estimate.createdBy was added
+   *  (= legacy data) or when the original author has left the project.
+   *  Caller resolves "自分" vs "{partnerName} さん" — this component
+   *  just renders whatever string lands here. */
+  authorLabel?: string | null;
 }
 
 const CATEGORY_ICONS: Record<string, ComponentType<{ className?: string; strokeWidth?: number }>> = {
@@ -54,6 +60,7 @@ export async function EstimateXRay({
   items,
   totalEstimate,
   predictedFinal,
+  authorLabel = null,
 }: EstimateXRayProps) {
   const riskyItems = items
     .filter(
@@ -90,6 +97,13 @@ export async function EstimateXRay({
       <p className="text-[13px] font-light text-muted-foreground leading-relaxed">
         見積もりの差分を、項目ごとに把握できます
       </p>
+      {authorLabel && (
+        <p className="text-[11.5px] text-muted-foreground/85">
+          <span className="font-medium text-[var(--gold-warm)]">入力者</span>
+          <span className="mx-1.5 opacity-40">·</span>
+          {authorLabel}
+        </p>
+      )}
 
       {/* Summary — display-scale numerals for main amounts */}
       <div className="space-y-3">

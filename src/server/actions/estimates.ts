@@ -55,6 +55,10 @@ export async function createEstimate(input: z.input<typeof estimateSchema>) {
     data: {
       venueId: validation.data.venueId,
       projectId,
+      // Audit P2-29: track the author so the UI can show "妻が作成"
+      // / "夫が作成" on each version. Project-shared row remains
+      // shared; this only labels who originally entered it.
+      createdBy: user.id,
       version: count + 1,
       total: validation.data.total,
       sourceType: "manual",
@@ -276,6 +280,10 @@ export async function saveAnalyzedEstimate(input: {
     data: {
       venueId: input.venueId,
       projectId,
+      // Audit P2-29: AI-extracted estimates also carry the uploader's
+      // user.id as the author, so the UI shows "妻が PDF 解析" /
+      // "夫が PDF 解析" the same way as manual entries.
+      createdBy: user.id,
       version: count + 1,
       total: input.total,
       predictedFinal: input.predictedFinal,
