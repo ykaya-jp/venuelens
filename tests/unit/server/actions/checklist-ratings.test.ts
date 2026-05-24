@@ -40,6 +40,7 @@ const mockCustomChecklistItemFindUnique = vi.fn();
 const mockCustomChecklistItemCount = vi.fn();
 const mockCustomChecklistItemCreate = vi.fn();
 const mockCustomChecklistItemUpdate = vi.fn();
+const mockUserUpsert = vi.fn();
 
 const mockTransaction = vi.fn();
 
@@ -57,6 +58,13 @@ vi.mock("@/server/db", () => ({
       count: (...a: unknown[]) => mockCustomChecklistItemCount(...a),
       create: (...a: unknown[]) => mockCustomChecklistItemCreate(...a),
       update: (...a: unknown[]) => mockCustomChecklistItemUpdate(...a),
+    },
+    // public.users upsert — added 2026-05-24 to defensively sync the
+    // Supabase auth.users row to public.users before the
+    // venue_checklist_answers.user FK bites. See incident
+    // `error.digest=142404057`.
+    user: {
+      upsert: (...a: unknown[]) => mockUserUpsert(...a),
     },
     // bulkSetDimensionRating wraps its writes in an interactive
     // transaction; the mock just invokes the callback with a `tx`
@@ -92,9 +100,14 @@ const PRESET_ITEM_ID = "chapel.interior.decor-style"; // present in CHECKLIST_PR
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockRequireUser.mockResolvedValue({ id: USER_ID });
+  mockRequireUser.mockResolvedValue({
+    id: USER_ID,
+    email: `${USER_ID}@example.com`,
+    user_metadata: { name: "Test User" },
+  });
   mockRequireVenueAccess.mockResolvedValue({ projectId: PROJECT_ID });
   mockRequireProjectMembership.mockResolvedValue({ projectId: PROJECT_ID });
+  mockUserUpsert.mockResolvedValue({ id: USER_ID });
   // Provide a default transaction implementation that simply invokes
   // the callback with the same per-model mocks. Individual tests can
   // override when they need to assert tx-specific behaviour.
@@ -160,17 +173,23 @@ describe("saveChildRating — validation rejects before Prisma", () => {
 });
 
 describe("saveChildRating — authz contract", () => {
-  it("rejects when requireVenueAccess throws (= cross-project IDOR)", async () => {
+  it("returns failure (does not throw) when requireVenueAccess rejects (= cross-project IDOR)", async () => {
+    // Behaviour change 2026-05-24: server-action throws now get caught
+    // and surface as `{ success: false }` so the React error boundary
+    // is never tripped (= the canonical 142404057 incident). The IDOR
+    // contract is still enforced — Prisma writes never happen.
     mockRequireVenueAccess.mockRejectedValueOnce(
       new Error("式場が見つからないか、アクセス権がありません"),
     );
-    await expect(
-      saveChildRating({
-        venueId: VENUE_ID,
-        itemId: PRESET_ITEM_ID,
-        score: 4.5,
-      }),
-    ).rejects.toThrow(/アクセス権/);
+    const result = await saveChildRating({
+      venueId: VENUE_ID,
+      itemId: PRESET_ITEM_ID,
+      score: 4.5,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error?.formErrors?.[0]).toMatch(/アクセス権/);
+    }
     expect(mockVenueChecklistAnswerUpsert).not.toHaveBeenCalled();
   });
 
@@ -218,49 +237,55 @@ describe("saveChildRating — preset vs custom item resolution", () => {
     expect(mockVenueChecklistAnswerUpsert).toHaveBeenCalledTimes(1);
   });
 
-  it("unknown itemId that is neither preset nor custom is rejected with no DB write", async () => {
+  it("unknown itemId that is neither preset nor custom returns failure with no DB write", async () => {
     mockProjectChecklistFindUnique.mockResolvedValue(null);
     mockCustomChecklistItemFindUnique.mockResolvedValue(null);
-    await expect(
-      saveChildRating({
-        venueId: VENUE_ID,
-        itemId: "definitely-not-a-real-item",
-        score: 4.0,
-      }),
-    ).rejects.toThrow(/評価項目/);
+    const result = await saveChildRating({
+      venueId: VENUE_ID,
+      itemId: "definitely-not-a-real-item",
+      score: 4.0,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error?.formErrors?.[0]).toMatch(/評価項目/);
+    }
     expect(mockProjectChecklistCreate).not.toHaveBeenCalled();
     expect(mockVenueChecklistAnswerUpsert).not.toHaveBeenCalled();
   });
 
-  it("custom item owned by a DIFFERENT project is rejected (= IDOR via custom-id)", async () => {
+  it("custom item owned by a DIFFERENT project returns failure (= IDOR via custom-id)", async () => {
     mockProjectChecklistFindUnique.mockResolvedValue(null);
     mockCustomChecklistItemFindUnique.mockResolvedValue({
       projectId: "00000000-0000-4000-8000-999999999999", // wrong project
       deletedAt: null,
     });
-    await expect(
-      saveChildRating({
-        venueId: VENUE_ID,
-        itemId: "custom-id-x",
-        score: 4.0,
-      }),
-    ).rejects.toThrow(/評価項目/);
+    const result = await saveChildRating({
+      venueId: VENUE_ID,
+      itemId: "custom-id-x",
+      score: 4.0,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error?.formErrors?.[0]).toMatch(/評価項目/);
+    }
     expect(mockProjectChecklistCreate).not.toHaveBeenCalled();
   });
 
-  it("soft-deleted custom item is rejected even when projectId matches", async () => {
+  it("soft-deleted custom item returns failure even when projectId matches", async () => {
     mockProjectChecklistFindUnique.mockResolvedValue(null);
     mockCustomChecklistItemFindUnique.mockResolvedValue({
       projectId: PROJECT_ID,
       deletedAt: new Date(),
     });
-    await expect(
-      saveChildRating({
-        venueId: VENUE_ID,
-        itemId: "custom-id-x",
-        score: 4.0,
-      }),
-    ).rejects.toThrow(/評価項目/);
+    const result = await saveChildRating({
+      venueId: VENUE_ID,
+      itemId: "custom-id-x",
+      score: 4.0,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error?.formErrors?.[0]).toMatch(/評価項目/);
+    }
   });
 });
 
@@ -287,15 +312,14 @@ describe("bulkSetDimensionRating — validation + authz", () => {
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
-  it("rejects when requireVenueAccess fails (= cross-project IDOR)", async () => {
+  it("returns failure when requireVenueAccess rejects (= cross-project IDOR)", async () => {
     mockRequireVenueAccess.mockRejectedValueOnce(new Error("no access"));
-    await expect(
-      bulkSetDimensionRating({
-        venueId: VENUE_ID,
-        itemIds: [PRESET_ITEM_ID],
-        score: 4.0,
-      }),
-    ).rejects.toThrow();
+    const result = await bulkSetDimensionRating({
+      venueId: VENUE_ID,
+      itemIds: [PRESET_ITEM_ID],
+      score: 4.0,
+    });
+    expect(result.success).toBe(false);
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 

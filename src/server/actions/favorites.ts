@@ -21,9 +21,51 @@ const HEART_ON_PROMOTE_FROM: VenueStatus[] = ["researching", "visit_scheduled"];
 const HEART_OFF_DEMOTE_FROM: VenueStatus[] = ["shortlisted"];
 
 export async function toggleFavorite(venueId: string): Promise<{ isFavorite: boolean }> {
+  try {
+    return await toggleFavoriteImpl(venueId);
+  } catch (e) {
+    if (
+      e instanceof Error &&
+      typeof (e as { digest?: unknown }).digest === "string" &&
+      (e as unknown as { digest: string }).digest.startsWith("NEXT_REDIRECT")
+    ) {
+      throw e;
+    }
+    // Verbose log for Vercel runtime logs — debugging "ハートを押しても何も
+    // 起きない" (`incident report 2026-05-24`) where the server side throws
+    // silently and the client toast.error fires too briefly to notice.
+    console.error("[toggleFavorite] failed", {
+      venueId,
+      error:
+        e instanceof Error
+          ? { name: e.name, message: e.message, stack: e.stack, code: (e as { code?: unknown }).code }
+          : { message: String(e) },
+    });
+    throw e;
+  }
+}
+
+async function toggleFavoriteImpl(venueId: string): Promise<{ isFavorite: boolean }> {
   const user = await requireUser();
   const { venue } = await requireVenueAccess(user.id, venueId);
   const { projectId } = await requireProjectMembership(user.id);
+
+  // Mirror checklist-ratings.ts: ensure the auth.users row has a matching
+  // public.users row so `venue_favorites.user_id` FK can land. A partner
+  // invited via ProjectInvitation can land here without ever having had
+  // public.users seeded — without this defensive upsert the heart tap
+  // throws P2003 silently (toast.error fires for 2 s and the visible
+  // state never updates).
+  const fallbackEmail = user.email ?? `${user.id}@unknown.local`;
+  const fallbackName =
+    (user.user_metadata?.name as string | undefined) ??
+    (user.user_metadata?.full_name as string | undefined) ??
+    null;
+  await prisma.user.upsert({
+    where: { id: user.id },
+    create: { id: user.id, email: fallbackEmail, name: fallbackName },
+    update: {},
+  });
 
   const existing = await prisma.venueFavorite.findUnique({
     where: { venueId_userId: { venueId, userId: user.id } },

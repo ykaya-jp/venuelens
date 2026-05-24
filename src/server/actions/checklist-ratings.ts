@@ -21,11 +21,63 @@
 import { z } from "zod";
 import { prisma } from "@/server/db";
 import { revalidateTag } from "next/cache";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
 import {
   requireUser,
   requireProjectMembership,
   requireVenueAccess,
 } from "@/server/auth";
+
+/**
+ * Ensure a `public.users` row exists for the current Supabase auth user.
+ * Server actions in this file write rows whose FK is `users.id`, but a
+ * freshly-invited partner may land in `auth.users` without a matching
+ * `public.users` row (= the canonical incident `error.digest=142404057`,
+ * tapping a child rating triggered P2003). This helper is idempotent —
+ * upsert by id, leave name/email untouched on subsequent calls so we
+ * never clobber a value the user later edited in /mypage.
+ */
+async function ensureUserRow(user: SupabaseUser): Promise<void> {
+  const fallbackEmail = user.email ?? `${user.id}@unknown.local`;
+  const fallbackName =
+    (user.user_metadata?.name as string | undefined) ??
+    (user.user_metadata?.full_name as string | undefined) ??
+    null;
+  await prisma.user.upsert({
+    where: { id: user.id },
+    create: { id: user.id, email: fallbackEmail, name: fallbackName },
+    update: {},
+  });
+}
+
+/**
+ * Normalise a thrown error into the `{ success: false, error: ... }` shape
+ * the client expects, so a server-side exception never reaches the page
+ * error boundary (= cannot trigger the cryptic "エラーID: xxx" overlay).
+ * `NEXT_REDIRECT` is re-thrown so Next.js auth redirects still work.
+ */
+function handleServerActionError(
+  where: string,
+  e: unknown,
+  context: Record<string, unknown>,
+): { success: false; error: { formErrors: string[]; fieldErrors: Record<string, string[]> } } {
+  if (e instanceof Error && typeof (e as { digest?: unknown }).digest === "string" && (e as unknown as { digest: string }).digest.startsWith("NEXT_REDIRECT")) {
+    throw e;
+  }
+  const errInfo =
+    e instanceof Error
+      ? { name: e.name, message: e.message, stack: e.stack, code: (e as { code?: unknown }).code }
+      : { message: String(e) };
+  console.error(`[${where}] failed`, { context, error: errInfo });
+  const userMessage =
+    e instanceof Error && e.message
+      ? `保存に失敗しました: ${e.message.slice(0, 120)}`
+      : "保存中にエラーが発生しました。時間をおいて再度お試しください。";
+  return {
+    success: false,
+    error: { formErrors: [userMessage], fieldErrors: {} },
+  };
+}
 
 // ─── shared validators ───────────────────────────────────────────────────
 
@@ -148,34 +200,50 @@ export async function saveChildRating(input: {
     return { success: false as const, error: parsed.error.flatten() };
   }
 
-  const user = await requireUser();
-  const { projectId } = await requireVenueAccess(user.id, parsed.data.venueId);
+  try {
+    const user = await requireUser();
+    const { projectId } = await requireVenueAccess(user.id, parsed.data.venueId);
 
-  const checklist = await ensureProjectChecklist(projectId, parsed.data.itemId);
+    // Lazily sync the Supabase auth.users → public.users row before the FK
+    // bites. Partner accounts created via ProjectInvitation can land in
+    // auth.users without a matching public.users row (the sync was previously
+    // assumed to happen at invitation acceptance, but a stale path could
+    // skip it — see incident `error.digest=142404057`). Without this, the
+    // venueChecklistAnswer.user FK throws P2003 the first time the partner
+    // taps a score and the user is bounced to error.tsx.
+    await ensureUserRow(user);
 
-  await prisma.venueChecklistAnswer.upsert({
-    where: {
-      projectChecklistId_venueId_userId: {
+    const checklist = await ensureProjectChecklist(projectId, parsed.data.itemId);
+
+    await prisma.venueChecklistAnswer.upsert({
+      where: {
+        projectChecklistId_venueId_userId: {
+          projectChecklistId: checklist.id,
+          venueId: parsed.data.venueId,
+          userId: user.id,
+        },
+      },
+      create: {
         projectChecklistId: checklist.id,
         venueId: parsed.data.venueId,
         userId: user.id,
+        numericScore: parsed.data.score,
       },
-    },
-    create: {
-      projectChecklistId: checklist.id,
+      update: {
+        numericScore: parsed.data.score,
+      },
+    });
+
+    revalidateTag(venueScoreTag(parsed.data.venueId), { expire: 0 });
+    revalidateTag(projectChecklistTag(projectId), { expire: 0 });
+
+    return { success: true as const };
+  } catch (e) {
+    return handleServerActionError("saveChildRating", e, {
       venueId: parsed.data.venueId,
-      userId: user.id,
-      numericScore: parsed.data.score,
-    },
-    update: {
-      numericScore: parsed.data.score,
-    },
-  });
-
-  revalidateTag(venueScoreTag(parsed.data.venueId), { expire: 0 });
-  revalidateTag(projectChecklistTag(projectId), { expire: 0 });
-
-  return { success: true as const };
+      itemId: parsed.data.itemId,
+    });
+  }
 }
 
 /**
@@ -195,10 +263,12 @@ export async function bulkSetDimensionRating(input: {
     return { success: false as const, error: parsed.error.flatten() };
   }
 
-  const user = await requireUser();
-  const { projectId } = await requireVenueAccess(user.id, parsed.data.venueId);
+  try {
+    const user = await requireUser();
+    const { projectId } = await requireVenueAccess(user.id, parsed.data.venueId);
+    await ensureUserRow(user);
 
-  await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
     for (const itemId of parsed.data.itemIds) {
       const existing = await tx.projectChecklist.findUnique({
         where: { projectId_itemId: { projectId, itemId } },
@@ -228,12 +298,18 @@ export async function bulkSetDimensionRating(input: {
         update: { numericScore: parsed.data.score },
       });
     }
-  });
+    });
 
-  revalidateTag(venueScoreTag(parsed.data.venueId), { expire: 0 });
-  revalidateTag(projectChecklistTag(projectId), { expire: 0 });
+    revalidateTag(venueScoreTag(parsed.data.venueId), { expire: 0 });
+    revalidateTag(projectChecklistTag(projectId), { expire: 0 });
 
-  return { success: true as const };
+    return { success: true as const };
+  } catch (e) {
+    return handleServerActionError("bulkSetDimensionRating", e, {
+      venueId: parsed.data.venueId,
+      itemIds: parsed.data.itemIds,
+    });
+  }
 }
 
 /**

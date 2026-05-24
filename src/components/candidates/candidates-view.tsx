@@ -99,6 +99,15 @@ interface CandidatesViewProps {
   userName?: string;
   initialTab?: "shortlist" | "compare" | "decision";
   /**
+   * Viewer's user.id from `requireUser()`. Needed so the shortlist can
+   * tell "the venue is my favorite" apart from "the venue is my
+   * partner's favorite I happen to be viewing" — the previous code
+   * hard-coded `isFavorite={true}` for every row and the partner-only
+   * filter painted hearts filled, breaking the heart-to-toggle flow
+   * (= the canonical 2026-05-24 incident).
+   */
+  currentUserId: string;
+  /**
    * W12-1: viewer's per-dimension weights. Used to recompute each venue
    * card's ★ badge with the couple's individual priorities. Null / omitted
    * → defaults to equal weights (legacy unweighted average) so the call
@@ -128,7 +137,20 @@ export function CandidatesView({
   initialTab,
   weights = null,
   coupleWeights = null,
+  currentUserId,
 }: CandidatesViewProps) {
+  // Derive the "me"/"partner" badge set for a favorite row. `favoritedBy`
+  // arrives as a list of raw userIds; the VenueCard prop expects a
+  // narrowed enum so it can render the dual-heart pip without leaking
+  // identifiers into the DOM.
+  const labelsFor = (fav: FavoriteVenue): ("me" | "partner")[] => {
+    const labels: ("me" | "partner")[] = [];
+    if (fav.favoritedBy.includes(currentUserId)) labels.push("me");
+    if (fav.favoritedBy.some((id) => id !== currentUserId)) labels.push("partner");
+    return labels;
+  };
+  const isMine = (fav: FavoriteVenue): boolean =>
+    fav.favoritedBy.includes(currentUserId);
   const [tab, setTab] = useState<Tab>(initialTab ?? "shortlist");
   const [filter, setFilter] = useState<"mine" | "partner" | "both">("mine");
   // W13-1: "自分" vs "二人の合成". Default is "mine" per product stance —
@@ -412,7 +434,12 @@ export function CandidatesView({
                           exit={{ opacity: 0, x: -100, transition: { duration: 0.4 } }}
                           transition={{ delay: Math.min(index, 4) * 0.06, duration: 0.42, ease: [0.16, 1, 0.3, 1] }}
                         >
-                          <VenueCard venue={fav.venue} isFavorite={true} weights={activeWeights} />
+                          <VenueCard
+                            venue={fav.venue}
+                            isFavorite={isMine(fav)}
+                            favoritedBy={labelsFor(fav)}
+                            weights={activeWeights}
+                          />
                           {/* W11-2: per-venue "この式場を選ぶなら" summary card.
                               Rendered under the venue card as a folded
                               disclosure — client-side math on the already-
@@ -431,6 +458,7 @@ export function CandidatesView({
                       favorites={favorites}
                       activeWeights={activeWeights}
                       summariesByVenueId={summariesByVenueId}
+                      currentUserId={currentUserId}
                     />
                   ))}
               </div>
@@ -551,10 +579,12 @@ function VirtualFavoritesList({
   favorites,
   activeWeights,
   summariesByVenueId,
+  currentUserId,
 }: {
   favorites: FavoriteVenue[];
   activeWeights: DimensionWeights | null;
   summariesByVenueId: Record<string, ReturnType<typeof buildDecisionSummary> | null>;
+  currentUserId: string;
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
   // scrollMargin must be a plain value (not a ref read) during render —
@@ -610,7 +640,13 @@ function VirtualFavoritesList({
             >
               <VenueCard
                 venue={fav.venue}
-                isFavorite={true}
+                isFavorite={fav.favoritedBy.includes(currentUserId)}
+                favoritedBy={(() => {
+                  const labels: ("me" | "partner")[] = [];
+                  if (fav.favoritedBy.includes(currentUserId)) labels.push("me");
+                  if (fav.favoritedBy.some((id) => id !== currentUserId)) labels.push("partner");
+                  return labels;
+                })()}
                 weights={activeWeights}
               />
               {showSummary && (
