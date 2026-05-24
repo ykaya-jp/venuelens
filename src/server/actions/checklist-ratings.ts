@@ -394,10 +394,23 @@ export async function addCustomChecklistItem(input: {
  * `<ChildRatingPanel>` can render the partner's value as a quiet overlay
  * under each child chip without a second round trip.
  *
- * Returns null `partnerScoreByItemId` when the project has no accepted
- * partner yet (single-member project). Each map keys ProjectChecklist
- * `itemId` (preset id or CustomChecklistItem cuid) → 0.5–5 numericScore
- * or null if the user hasn't graded that item yet.
+ * # Null semantics (Audit P1-12)
+ *
+ * `partnerScoreByItemId` is `null` (the whole map, not per-entry) when
+ * the project has no accepted partner yet (= solo project). Otherwise
+ * the map exists and each entry can be:
+ *
+ *   - `number` — the partner's 0.5-5.0 score for this item.
+ *   - `null`   — the partner has NOT graded this item yet.
+ *
+ * Why no third value: ProjectChecklist rows are project-scoped (one row
+ * per couple, not per-member), so "the partner hasn't enabled this item"
+ * is structurally impossible — if a row exists in the active checklist
+ * for the project, it's enabled for both members in lock-step. Callers
+ * therefore treat partner-side `null` as "未評価" unambiguously.
+ *
+ * Each map keys ProjectChecklist `itemId` (preset id or
+ * CustomChecklistItem cuid) → number | null.
  */
 export async function getCoupleChecklistAnswers(venueId: string): Promise<{
   ownScoreByItemId: Record<string, number | null>;
