@@ -98,7 +98,14 @@ export function CompareRedesigned() {
     return raw
       .split(",")
       .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+      .filter((s) => s.length > 0)
+      // Audit P2-30: cap the deeplinked selection at MAX_SELECTED so a
+      // URL with 11+ ids doesn't blow past the column allocation. The
+      // server-side `COMPARE_MAX_VENUES` (10) already slices its
+      // response, but without this cap on the client the chip picker
+      // surfaces extras above MAX_SELECTED that no longer match the
+      // server view.
+      .slice(0, MAX_SELECTED);
   }, [searchParams]);
 
   const [data, setData] = useState<UnifiedComparisonData | null>(null);
@@ -502,14 +509,49 @@ export function CompareRedesigned() {
           indicator. Horizontally scrollable; each chip tap toggles a
           selection, but chips beyond MAX_SELECTED are disabled. */}
       {pool.length === 0 ? (
+        /* Audit P2-28: empty states used to end at "〜ありません" with
+           no next-step affordance, violating DESIGN.md P1 "Empty states
+           are invitations". Each case now offers a single CTA pointed
+           at the most plausible next action for that filter. */
         <div className="mx-3 rounded-xl border border-dashed border-border bg-surface-sunken px-4 py-6 text-center">
-          <p className="text-[12.5px] leading-relaxed text-muted-foreground">
-            {ownerFilter === "both"
-              ? "おふたりが共通で候補にしている式場はまだありません。"
-              : ownerFilter === "partner"
-                ? "パートナーの候補はまだありません。"
-                : "自分の候補はまだありません。"}
-          </p>
+          {ownerFilter === "both" ? (
+            <>
+              <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+                おふたりが共通で候補にしている式場はまだありません。
+              </p>
+              <button
+                type="button"
+                onClick={() => setOwnerFilter("mine")}
+                className="mt-2 inline-flex min-h-9 items-center justify-center rounded-full bg-[var(--gold-warm)]/15 px-4 text-[11.5px] font-medium text-[var(--gold-warm)] active:scale-[0.97]"
+              >
+                自分の候補から見る
+              </button>
+            </>
+          ) : ownerFilter === "partner" ? (
+            <>
+              <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+                パートナーの候補はまだありません。
+              </p>
+              <Link
+                href="/mypage"
+                className="mt-2 inline-flex min-h-9 items-center justify-center rounded-full bg-primary px-4 text-[11.5px] font-medium text-primary-foreground active:scale-[0.97]"
+              >
+                招待リンクを送る
+              </Link>
+            </>
+          ) : (
+            <>
+              <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+                自分の候補はまだありません。
+              </p>
+              <Link
+                href="/explore"
+                className="mt-2 inline-flex min-h-9 items-center justify-center rounded-full bg-primary px-4 text-[11.5px] font-medium text-primary-foreground active:scale-[0.97]"
+              >
+                式場を探す
+              </Link>
+            </>
+          )}
         </div>
       ) : (
         <div className="-mx-3 flex gap-2 overflow-x-auto px-3 pb-1 scrollbar-hide">
@@ -554,14 +596,23 @@ export function CompareRedesigned() {
                   {v.name}
                 </p>
                 <div className="flex items-center gap-1">
+                  {/* Audit P2-27: was 「自分」(全角2字) vs 「P」(半角1字)
+                      = visual + linguistic asymmetry. Unified to a single
+                      character each so the dual badge reads cleanly. */}
                   {byMe && (
-                    <span className="rounded-full bg-foreground/10 px-1.5 text-[9px] text-foreground/70">
-                      自分
+                    <span
+                      aria-label="自分の候補"
+                      className="rounded-full bg-[color-mix(in_oklab,var(--primary)_18%,transparent)] px-1.5 text-[9px] font-medium text-[color:var(--primary)]"
+                    >
+                      自
                     </span>
                   )}
                   {byPartner && (
-                    <span className="rounded-full bg-foreground/10 px-1.5 text-[9px] text-foreground/70">
-                      P
+                    <span
+                      aria-label="相手の候補"
+                      className="rounded-full bg-[color-mix(in_oklab,var(--secondary)_18%,transparent)] px-1.5 text-[9px] font-medium text-secondary"
+                    >
+                      相
                     </span>
                   )}
                 </div>
