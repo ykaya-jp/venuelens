@@ -20,14 +20,80 @@
 
 import { z } from "zod";
 import { prisma } from "@/server/db";
+import { Prisma } from "@/generated/prisma/client";
 import { revalidateTag } from "next/cache";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
+import type { Prisma as PrismaTypes } from "@/generated/prisma/client";
 import {
   requireUser,
   requireProjectMembership,
   requireVenueAccess,
 } from "@/server/auth";
 import { publishRealtimeEvent, resolveActor } from "@/lib/realtime/publish";
+/**
+ * Race-safe wrapper around `venueChecklistAnswer.upsert`.
+ *
+ * Prisma's upsert is NOT atomic — under the hood it runs SELECT then
+ * INSERT-or-UPDATE in two separate statements. Under chip-burst tap
+ * (or partner / multi-tab concurrent save) two callers can both miss
+ * the row in the SELECT, then both attempt INSERT, and one of them
+ * eats a `P2002` on the `(project_checklist_id, venue_id, user_id)`
+ * unique constraint. Catch that specific race and retry as a plain
+ * UPDATE — by the time we get here the row exists, so we just need
+ * to overwrite the score (last write wins, matches the upsert's
+ * implicit contract). All other errors propagate untouched.
+ *
+ * @param tx — pass a transaction client when this runs inside a
+ *   `prisma.$transaction` (e.g. bulkSetDimensionRating); defaults to
+ *   the top-level prisma client otherwise.
+ */
+async function upsertChecklistAnswerSafely(
+  tx:
+    | typeof prisma
+    | Pick<PrismaTypes.TransactionClient, "venueChecklistAnswer">,
+  args: {
+    projectChecklistId: string;
+    venueId: string;
+    userId: string;
+    numericScore: number | null;
+  },
+): Promise<void> {
+  const where = {
+    projectChecklistId_venueId_userId: {
+      projectChecklistId: args.projectChecklistId,
+      venueId: args.venueId,
+      userId: args.userId,
+    },
+  };
+  try {
+    await tx.venueChecklistAnswer.upsert({
+      where,
+      create: {
+        projectChecklistId: args.projectChecklistId,
+        venueId: args.venueId,
+        userId: args.userId,
+        numericScore: args.numericScore,
+      },
+      update: { numericScore: args.numericScore },
+    });
+  } catch (e) {
+    if (
+      e instanceof Prisma.PrismaClientKnownRequestError &&
+      e.code === "P2002"
+    ) {
+      // The row appeared between our SELECT and INSERT — last write
+      // wins, so just update it. If THIS update also somehow races,
+      // we let it propagate; two concurrent writers losing both legs
+      // is implausible enough to deserve the visibility.
+      await tx.venueChecklistAnswer.update({
+        where,
+        data: { numericScore: args.numericScore },
+      });
+      return;
+    }
+    throw e;
+  }
+}
 import { getCoupleMembers } from "@/lib/couple-members";
 
 /**
@@ -217,23 +283,11 @@ export async function saveChildRating(input: {
 
     const checklist = await ensureProjectChecklist(projectId, parsed.data.itemId);
 
-    await prisma.venueChecklistAnswer.upsert({
-      where: {
-        projectChecklistId_venueId_userId: {
-          projectChecklistId: checklist.id,
-          venueId: parsed.data.venueId,
-          userId: user.id,
-        },
-      },
-      create: {
-        projectChecklistId: checklist.id,
-        venueId: parsed.data.venueId,
-        userId: user.id,
-        numericScore: parsed.data.score,
-      },
-      update: {
-        numericScore: parsed.data.score,
-      },
+    await upsertChecklistAnswerSafely(prisma, {
+      projectChecklistId: checklist.id,
+      venueId: parsed.data.venueId,
+      userId: user.id,
+      numericScore: parsed.data.score,
     });
 
     revalidateTag(venueScoreTag(parsed.data.venueId), { expire: 0 });
@@ -294,21 +348,11 @@ export async function bulkSetDimensionRating(input: {
           select: { id: true },
         }));
 
-      await tx.venueChecklistAnswer.upsert({
-        where: {
-          projectChecklistId_venueId_userId: {
-            projectChecklistId: checklist.id,
-            venueId: parsed.data.venueId,
-            userId: user.id,
-          },
-        },
-        create: {
-          projectChecklistId: checklist.id,
-          venueId: parsed.data.venueId,
-          userId: user.id,
-          numericScore: parsed.data.score,
-        },
-        update: { numericScore: parsed.data.score },
+      await upsertChecklistAnswerSafely(tx, {
+        projectChecklistId: checklist.id,
+        venueId: parsed.data.venueId,
+        userId: user.id,
+        numericScore: parsed.data.score,
       });
     }
     });
