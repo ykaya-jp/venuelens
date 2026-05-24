@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState, useTransition } from "react";
+import { useCallback, useMemo, useRef, useState, useTransition } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Check, ChevronDown, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -92,6 +92,13 @@ export function ChildRatingPanel({
   });
   const [pendingItemId, setPendingItemId] = useState<string | null>(null);
   const [, startTransition] = useTransition();
+  // Per-item in-flight guard — chip-burst tap (rapid 4.0 → 4.5 → 4.0)
+  // used to fire concurrent saveChildRating calls, and Prisma's non-
+  // atomic upsert lost the race ~10% of the time with a P2002 unique
+  // violation. While the server now retries on P2002 (see
+  // `upsertChecklistAnswerSafely`), throttling on the client avoids
+  // the round-trip entirely and keeps optimistic UI in sync.
+  const inFlightItemsRef = useRef<Set<string>>(new Set());
 
   // Group items by dimension. Iterating TIER1_DIMENSIONS preserves the
   // same visual order users see in the comparison view and the parent
@@ -116,6 +123,14 @@ export function ChildRatingPanel({
 
   const handleSetScore = useCallback(
     (itemId: string, nextScore: number | null) => {
+      // Drop double-taps on the SAME item while a save is still in
+      // flight. Different items still race (= one user can rate 8
+      // dims in 8 seconds), which is fine — only same-item concurrent
+      // saves can fight each other for the (pc, venue, user) unique.
+      if (inFlightItemsRef.current.has(itemId)) {
+        return;
+      }
+      inFlightItemsRef.current.add(itemId);
       // Optimistic: paint immediately so the slider feels responsive.
       // saveChildRating is debounce-free because the input is a chip tap
       // (= one discrete event); a rapid retap on a different chip
@@ -168,6 +183,8 @@ export function ChildRatingPanel({
           console.error("[ChildRatingPanel] saveChildRating threw", e);
           toast.error("通信エラーで評価を残せませんでした", { duration: 6000 });
           rollback();
+        } finally {
+          inFlightItemsRef.current.delete(itemId);
         }
       });
     },
