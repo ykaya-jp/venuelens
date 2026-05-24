@@ -19,8 +19,8 @@
  */
 
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/server/db";
-import { Prisma } from "@/generated/prisma/client";
 import { revalidateTag } from "next/cache";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 import type { Prisma as PrismaTypes } from "@/generated/prisma/client";
@@ -31,26 +31,36 @@ import {
 } from "@/server/auth";
 import { publishRealtimeEvent, resolveActor } from "@/lib/realtime/publish";
 /**
- * Race-safe wrapper around `venueChecklistAnswer.upsert`.
+ * Atomic upsert for `venue_checklist_answers` via Postgres
+ * `INSERT … ON CONFLICT DO UPDATE`.
  *
- * Prisma's upsert is NOT atomic — under the hood it runs SELECT then
- * INSERT-or-UPDATE in two separate statements. Under chip-burst tap
- * (or partner / multi-tab concurrent save) two callers can both miss
- * the row in the SELECT, then both attempt INSERT, and one of them
- * eats a `P2002` on the `(project_checklist_id, venue_id, user_id)`
- * unique constraint. Catch that specific race and retry as a plain
- * UPDATE — by the time we get here the row exists, so we just need
- * to overwrite the score (last write wins, matches the upsert's
- * implicit contract). All other errors propagate untouched.
+ * Why not Prisma's `upsert()`:
+ *   Prisma's upsert runs SELECT → (INSERT or UPDATE) as two separate
+ *   statements. Under concurrent tap / partner-on-other-device / multi-
+ *   tab saves, both callers can miss the row in SELECT, both attempt
+ *   INSERT, and one of them eats P2002. The 2026-05-25 follow-up tried
+ *   to catch P2002 and retry as UPDATE, but that path itself races a
+ *   second time (UPDATE's WHERE can find no row when a sibling tx has
+ *   rolled back its INSERT before the UPDATE runs, giving P2025
+ *   "Record to update not found").
  *
- * @param tx — pass a transaction client when this runs inside a
+ *   Postgres's native `INSERT … ON CONFLICT DO UPDATE` is a single
+ *   atomic statement — it locks the conflicting row in the same
+ *   transaction, no SELECT-then-INSERT window. This is the
+ *   cleanest fix.
+ *
+ * The `id` column is `cuid()` in Prisma but the underlying Postgres
+ * column is just `text` — we generate a UUID with Node's crypto and
+ * pass it in. ON CONFLICT path ignores it, so generating a UUID we
+ * may discard is cheap insurance against the race.
+ *
+ * @param tx — pass a transaction client when called inside a
  *   `prisma.$transaction` (e.g. bulkSetDimensionRating); defaults to
- *   the top-level prisma client otherwise.
+ *   the top-level prisma client otherwise. We only need `$executeRaw`
+ *   so the type is narrowed accordingly.
  */
 async function upsertChecklistAnswerSafely(
-  tx:
-    | typeof prisma
-    | Pick<PrismaTypes.TransactionClient, "venueChecklistAnswer">,
+  tx: Pick<PrismaTypes.TransactionClient, "$executeRaw"> | typeof prisma,
   args: {
     projectChecklistId: string;
     venueId: string;
@@ -58,41 +68,17 @@ async function upsertChecklistAnswerSafely(
     numericScore: number | null;
   },
 ): Promise<void> {
-  const where = {
-    projectChecklistId_venueId_userId: {
-      projectChecklistId: args.projectChecklistId,
-      venueId: args.venueId,
-      userId: args.userId,
-    },
-  };
-  try {
-    await tx.venueChecklistAnswer.upsert({
-      where,
-      create: {
-        projectChecklistId: args.projectChecklistId,
-        venueId: args.venueId,
-        userId: args.userId,
-        numericScore: args.numericScore,
-      },
-      update: { numericScore: args.numericScore },
-    });
-  } catch (e) {
-    if (
-      e instanceof Prisma.PrismaClientKnownRequestError &&
-      e.code === "P2002"
-    ) {
-      // The row appeared between our SELECT and INSERT — last write
-      // wins, so just update it. If THIS update also somehow races,
-      // we let it propagate; two concurrent writers losing both legs
-      // is implausible enough to deserve the visibility.
-      await tx.venueChecklistAnswer.update({
-        where,
-        data: { numericScore: args.numericScore },
-      });
-      return;
-    }
-    throw e;
-  }
+  const id = randomUUID();
+  await tx.$executeRaw`
+    INSERT INTO "venue_checklist_answers"
+      ("id", "project_checklist_id", "venue_id", "user_id", "numeric_score", "updated_at")
+    VALUES
+      (${id}, ${args.projectChecklistId}, ${args.venueId}::uuid, ${args.userId}::uuid, ${args.numericScore}, NOW())
+    ON CONFLICT ("project_checklist_id", "venue_id", "user_id")
+    DO UPDATE SET
+      "numeric_score" = EXCLUDED."numeric_score",
+      "updated_at"    = NOW()
+  `;
 }
 import { getCoupleMembers } from "@/lib/couple-members";
 
