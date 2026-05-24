@@ -193,13 +193,13 @@ export function ChildRatingPanel({
   return (
     <section className="space-y-3">
       <div>
-        <p className="text-[11.5px] uppercase tracking-[0.2em] text-muted-foreground">
+        <p className="text-fluid-xs uppercase tracking-[0.2em] text-muted-foreground">
           Detail
         </p>
-        <h2 className="mt-0.5 font-[family-name:var(--font-display)] text-[15px] font-light tracking-[-0.005em]">
+        <h2 className="mt-0.5 font-[family-name:var(--font-display)] text-fluid-base font-light tracking-[-0.005em]">
           細かく評価する
         </h2>
-        <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
+        <p className="mt-1 text-fluid-xs leading-relaxed text-muted-foreground">
           項目ごとに 0.5–5 で残せます。残した点は次元ごとの平均となり、
           比較表 (/compare) でそのまま見比べられます。
         </p>
@@ -223,10 +223,10 @@ export function ChildRatingPanel({
                 aria-expanded={isOpen}
               >
                 <span className="flex flex-col">
-                  <span className="font-[family-name:var(--font-display)] text-[14.5px] font-light tracking-tight">
+                  <span className="font-[family-name:var(--font-display)] text-fluid-base font-light tracking-tight">
                     {DIMENSION_LABELS[dim]}
                   </span>
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="text-fluid-xs text-muted-foreground">
                     {rated > 0
                       ? `平均 ${agg.score?.toFixed(1) ?? "—"} · ${rated} / ${total} 件残した`
                       : `${total} 件未評価`}
@@ -301,28 +301,35 @@ function ChildRow({
   return (
     <div className="space-y-1.5">
       <div className="flex items-start justify-between gap-2">
-        <p className="text-[13px] leading-snug">{item.label}</p>
+        <p className="text-fluid-sm leading-snug">{item.label}</p>
         {pending ? (
           <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
         ) : score !== null ? (
-          <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-[color-mix(in_oklab,var(--gold-warm)_12%,transparent)] px-2 py-0.5 text-[11px] font-medium tabular-nums text-[var(--gold-warm)]">
+          <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-[color-mix(in_oklab,var(--gold-warm)_12%,transparent)] px-2 py-0.5 text-fluid-xs font-medium tabular-nums text-[var(--gold-warm)]">
             <Check className="h-2.5 w-2.5" strokeWidth={2.5} />
             {score.toFixed(1)}
           </span>
         ) : null}
       </div>
-      <div className="flex flex-wrap gap-1">
+      <div className="flex flex-wrap items-center gap-1">
         {HALF_STEPS.map((step) => {
           const active = score === step;
           return (
             <button
               key={step}
               type="button"
-              onClick={() => onChange(active ? null : step)}
+              // Audit P1-18: tapping an already-active chip used to clear
+              // the score silently — a stray retap on the same value
+              // (common on the 11-chip grid at 375px) erased a 30-second
+              // judgement without a way back. Now active retap is a
+              // no-op; explicit clear is the trailing × button below.
+              onClick={() => {
+                if (!active) onChange(step);
+              }}
               aria-pressed={active}
               aria-label={`${step} 点`}
               className={cn(
-                "min-h-11 min-w-11 rounded-full border px-2 text-[11px] tabular-nums transition-colors active:scale-[0.96]",
+                "min-h-11 min-w-11 rounded-full border px-2 text-fluid-xs tabular-nums transition-colors active:scale-[0.96]",
                 active
                   ? "border-[var(--gold-warm)] bg-[var(--gold-warm)] text-[var(--gold-foreground,white)]"
                   : "border-border bg-background text-muted-foreground active:bg-muted",
@@ -332,11 +339,29 @@ function ChildRow({
             </button>
           );
         })}
+        {score !== null && (
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                typeof window !== "undefined" &&
+                !window.confirm("この項目の評価を消しますか？")
+              ) {
+                return;
+              }
+              onChange(null);
+            }}
+            aria-label="評価をクリア"
+            className="min-h-11 min-w-11 rounded-full border border-dashed border-border bg-background px-2 text-fluid-xs text-muted-foreground active:scale-[0.96] active:bg-muted"
+          >
+            ×
+          </button>
+        )}
       </div>
       {showPartner ? (
         <div
           className={cn(
-            "flex items-center gap-2 pl-0.5 pt-0.5 text-[11px] text-muted-foreground",
+            "flex items-center gap-2 pl-0.5 pt-0.5 text-fluid-xs text-muted-foreground",
             aligned && "text-[var(--gold-warm)]",
           )}
           aria-label={`${partnerName} の評価 ${partnerScore.toFixed(1)} 点`}

@@ -58,6 +58,7 @@ function dedupKey(event: RealtimeEvent): string {
     case "rating_saved":
     case "decision_made":
     case "venue_deleted":
+    case "venue_added":
       return `${event.kind}:${event.venueId}:${event.actor.userId}`;
     case "note_added":
       return `${event.kind}:${event.visitId}:${event.actor.userId}`;
@@ -84,6 +85,11 @@ function toastCopy(event: RealtimeEvent): { kind: "info" | "success"; msg: strin
       // Naming the venue in-band lets the partner see exactly which row
       // vanished without having to refresh and notice the empty slot.
       return { kind: "info", msg: `${name}さんが「${event.venueName}」を手放しました` };
+    case "venue_added":
+      return {
+        kind: "info",
+        msg: `${name}さんが「${event.venueName}」を候補に追加しました`,
+      };
   }
 }
 
@@ -100,6 +106,7 @@ function shouldRefresh(event: RealtimeEvent): boolean {
     case "decision_made":
     case "wedding_date_updated":
     case "venue_deleted":
+    case "venue_added":
       return true;
   }
 }

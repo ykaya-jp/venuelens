@@ -169,10 +169,15 @@ export function PartnerComparisonSummary({
                 />
               )}
               <div className="w-20 text-xs">{DIMENSION_LABELS[dim]}</div>
+              {/* Audit P1-16: 自分 = Rose (--primary), 相手 = Brown
+                  (--secondary), 合意 = Gold (--gold-warm). Was 自分 =
+                  Gold which collided with DESIGN.md's "Gold = AI /
+                  consensus" role and made the partner card and the
+                  detail rating bars disagree on color semantics. */}
               <div className="flex flex-1 items-center gap-2">
                 <div className="flex-1">
                   <div
-                    className="h-2 rounded-full bg-[var(--gold-warm)]"
+                    className="h-2 rounded-full bg-[var(--primary)]"
                     style={{ width: `${(my / 5) * 100}%` }}
                   />
                 </div>

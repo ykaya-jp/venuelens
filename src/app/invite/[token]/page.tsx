@@ -471,7 +471,13 @@ function SwitchConfirmCard({
 function InvalidCard({
   reason,
 }: {
-  reason: "invalid" | "expired" | "stale" | "self" | "already_joined";
+  reason:
+    | "invalid"
+    | "expired"
+    | "stale"
+    | "self"
+    | "already_joined"
+    | "wrong_recipient";
 }) {
   const messages: Record<typeof reason, string> = {
     invalid:
@@ -483,6 +489,12 @@ function InvalidCard({
     self: "ご自身で作ったリンクは、ご自身ではお使いになれません。パートナーにお渡しください。",
     already_joined:
       "すでに別の式場さがしに参加しています。パートナーと同じ場所に合流するには、ご本人にもう一度招待をお願いしてください。",
+    // Audit P0-1: explicit copy for "this URL is bound to a specific
+    // email and your Supabase Auth email doesn't match" — keeps the
+    // legitimate recipient from being scared off ("did I do something
+    // wrong?") while still refusing the wrong account.
+    wrong_recipient:
+      "この招待リンクは、別のメールアドレス宛にお送りされたものです。招待された方のアドレスでサインインのうえ、もう一度お試しください。",
   };
 
   return (

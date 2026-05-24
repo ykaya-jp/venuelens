@@ -201,6 +201,8 @@ const PARTNER_EVENT_TO_COLUMN = {
   partner_note_added: "notifyPartnerNote",
   decision_saved: "notifyDecisionSaved",
   wedding_date_set: "notifyWeddingDateSet",
+  partner_venue_added: "notifyPartnerVenueAdded",
+  partner_venue_deleted: "notifyPartnerVenueDeleted",
 } as const satisfies Record<RealtimePushEvent, string>;
 
 const updatePartnerActivitySchema = z.object({
@@ -209,6 +211,8 @@ const updatePartnerActivitySchema = z.object({
     "partner_note_added",
     "decision_saved",
     "wedding_date_set",
+    "partner_venue_added",
+    "partner_venue_deleted",
   ]),
   enabled: z.boolean(),
 });

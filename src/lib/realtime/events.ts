@@ -99,6 +99,15 @@ export type RealtimeEvent =
        *  though by the time the event lands the row is already
        *  soft-deleted and `getVenueHeader` would return null. */
       venueName: string;
+    }
+  | {
+      kind: "venue_added";
+      actor: RealtimeActor;
+      venueId: string;
+      /** Venue name carried in-band — same shape as `venue_deleted` —
+       *  so the partner toast can name it without an extra fetch and
+       *  the Web Push body picker can interpolate {venueName}. */
+      venueName: string;
     };
 
 /** The `kind` discriminant exported as a value so consumers can
@@ -110,6 +119,7 @@ export const REALTIME_EVENT_KINDS = [
   "decision_made",
   "wedding_date_updated",
   "venue_deleted",
+  "venue_added",
 ] as const satisfies ReadonlyArray<RealtimeEvent["kind"]>;
 
 export type RealtimeEventKind = RealtimeEvent["kind"];

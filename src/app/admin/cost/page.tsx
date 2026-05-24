@@ -184,6 +184,8 @@ export default async function AdminCostPage() {
           notifyPartnerNote: true,
           notifyDecisionSaved: true,
           notifyWeddingDateSet: true,
+          notifyPartnerVenueAdded: true,
+          notifyPartnerVenueDeleted: true,
         },
       })
       .catch(() => []),

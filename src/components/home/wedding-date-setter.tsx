@@ -33,6 +33,28 @@ export function WeddingDateSetter({ mode, initialDate }: Props) {
   const [isPending, startTransition] = useTransition();
 
   function commit(date: string | null) {
+    // Audit P1-22: wedding-date overwrites were silent before this —
+    // both members could update the date with no confirmation, so a
+    // partner could blindly stomp on a date the other had just set.
+    // Confirm in the browser whenever there is already a date on file
+    // (= initialDate non-null) so the second person to edit at least
+    // sees what they're replacing. The server action itself stays
+    // idempotent for clear (date=null) so the "未設定にする" flow doesn't
+    // ask for confirmation.
+    if (initialDate && date && date !== initialDate) {
+      const ok =
+        typeof window !== "undefined" &&
+        window.confirm(
+          `すでに ${initialDate} で残されています。 ${date} に変更しますか？`,
+        );
+      if (!ok) return;
+    } else if (initialDate && date === null) {
+      const ok =
+        typeof window !== "undefined" &&
+        window.confirm(`${initialDate} を未設定に戻しますか？`);
+      if (!ok) return;
+    }
+
     startTransition(async () => {
       try {
         const result = await updateWeddingDate({ date });

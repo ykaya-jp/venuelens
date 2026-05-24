@@ -86,6 +86,8 @@ const KIND_TO_PREF_COLUMN = {
   partner_note_added: "notifyPartnerNote",
   decision_saved: "notifyDecisionSaved",
   wedding_date_set: "notifyWeddingDateSet",
+  partner_venue_added: "notifyPartnerVenueAdded",
+  partner_venue_deleted: "notifyPartnerVenueDeleted",
 } as const satisfies Record<RealtimePushEvent, string>;
 
 type RecipientPref = {
@@ -94,6 +96,8 @@ type RecipientPref = {
   notifyPartnerNote: boolean;
   notifyDecisionSaved: boolean;
   notifyWeddingDateSet: boolean;
+  notifyPartnerVenueAdded: boolean;
+  notifyPartnerVenueDeleted: boolean;
 };
 
 function isEventEnabledForPref(
@@ -133,6 +137,8 @@ export async function dispatchRealtimeEvent(
                 notifyPartnerNote: true,
                 notifyDecisionSaved: true,
                 notifyWeddingDateSet: true,
+                notifyPartnerVenueAdded: true,
+                notifyPartnerVenueDeleted: true,
               },
             },
           },

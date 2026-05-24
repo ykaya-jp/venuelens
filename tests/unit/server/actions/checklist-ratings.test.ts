@@ -86,6 +86,18 @@ vi.mock("next/cache", () => ({
   revalidateTag: (...a: unknown[]) => mockRevalidateTag(...a),
 }));
 
+// publishRealtimeEvent and friends are best-effort fire-and-forget;
+// the suite doesn't care what they were called with, only that they
+// don't throw and don't pull `prisma.user.findUnique` (the real
+// implementation does, which crashes when the suite's prisma mock
+// hasn't stubbed it). Stub-and-resolve.
+vi.mock("@/lib/realtime/publish", () => ({
+  publishRealtimeEvent: vi.fn().mockResolvedValue(undefined),
+  resolveActor: vi
+    .fn()
+    .mockResolvedValue({ userId: "user-1", name: "Test User" }),
+}));
+
 import {
   saveChildRating,
   bulkSetDimensionRating,

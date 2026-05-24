@@ -307,6 +307,27 @@ export async function acceptInvitation(invitationId: string) {
       return { success: false as const, error: "すでに承諾済みか、招待が無効です" };
     }
 
+    // Audit P1-15: sync the Supabase Auth canonical email into
+    // public.users so a later email change in Auth (dashboard, password
+    // reset, etc.) doesn't leave the public.users row pointing at the
+    // stale address. The match check at line ~199 already proved the
+    // emails were equal at this instant; writing the lowercased form
+    // keeps the row canonical for future comparisons. Also pulls a
+    // name from user_metadata when one exists — invitePartner creates
+    // the row with name=null, so first-accept is when we can plausibly
+    // fill it.
+    const metadataName =
+      (user.user_metadata?.name as string | undefined) ??
+      (user.user_metadata?.full_name as string | undefined) ??
+      null;
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        email: user.email.toLowerCase(),
+        ...(metadataName ? { name: metadataName } : {}),
+      },
+    });
+
     return { success: true as const, projectId: membership.projectId };
   });
 

@@ -80,9 +80,28 @@ export interface InvitationLink {
  * Re-calling replaces any existing (un-consumed) link for the same project
  * to keep things tidy — only one live link at a time.
  */
-export async function createInvitationLink(): Promise<InvitationLink> {
+/**
+ * Owner: create a one-tap invitation link. 7 日有効、1 回限り。
+ *
+ * Audit P0-1: optional `invitedEmail` binds the token to a specific
+ * recipient. When set, `consumeInvitationLink` requires the caller's
+ * Supabase Auth email to match (case-insensitive) — a leaked URL alone
+ * is no longer enough to join. Pass `undefined` for the legacy "shareable
+ * link" semantics; existing rows with NULL `invitedEmail` behave the
+ * same way until they expire.
+ */
+export async function createInvitationLink(
+  invitedEmail?: string,
+): Promise<InvitationLink> {
   const user = await requireUser();
   const { projectId } = await requireOwner(user.id);
+
+  const normalizedEmail = invitedEmail
+    ? invitedEmail.trim().toLowerCase() || null
+    : null;
+  if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error("メールアドレスの形式が正しくありません");
+  }
 
   const token = randomBytes(TOKEN_BYTES).toString("hex");
   const expiresAt = new Date(
@@ -101,6 +120,7 @@ export async function createInvitationLink(): Promise<InvitationLink> {
       token,
       createdBy: user.id,
       expiresAt,
+      invitedEmail: normalizedEmail,
     },
   });
 
@@ -133,7 +153,16 @@ export async function consumeInvitationLink(token: string): Promise<
        *  with `already_joined` instead, so they never get counted here. */
       discardedProjectCount: number;
     }
-  | { ok: false; reason: "invalid" | "expired" | "stale" | "self" | "already_joined" }
+  | {
+      ok: false;
+      reason:
+        | "invalid"
+        | "expired"
+        | "stale"
+        | "self"
+        | "already_joined"
+        | "wrong_recipient";
+    }
 > {
   const user = await requireUser();
 
@@ -151,6 +180,19 @@ export async function consumeInvitationLink(token: string): Promise<
   if (invitation.createdBy === user.id) {
     // Owner shouldn't self-consume.
     return { ok: false, reason: "self" };
+  }
+
+  // Audit P0-1: when the invitation was created with a bound recipient
+  // email, only that email can consume it. Closes the URL-leak hijack
+  // vector — pasting the link into a chat no longer gives the wrong
+  // Google account access to the couple's full data. Null
+  // `invitedEmail` (legacy rows pre-2026-05-24) falls through unchecked
+  // for backwards compatibility; those rows expire within 30 days.
+  if (invitation.invitedEmail) {
+    const callerEmail = user.email?.toLowerCase().trim();
+    if (!callerEmail || callerEmail !== invitation.invitedEmail.toLowerCase()) {
+      return { ok: false, reason: "wrong_recipient" };
+    }
   }
 
   // F4 guard (mirrors acceptInvitation): if the partner already sits on

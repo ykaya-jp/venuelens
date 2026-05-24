@@ -13,6 +13,66 @@ import {
   type RealtimeActor,
   type RealtimeEvent,
 } from "@/lib/realtime/events";
+import { dispatchRealtimeEvent } from "@/lib/push/dispatch-realtime";
+import type { RealtimePushEvent } from "@/lib/push/realtime-copy";
+
+/**
+ * Map our internal RealtimeEvent.kind → the Web Push event vocabulary
+ * consumed by `dispatchRealtimeEvent`. Audit P0-3: prior to 2026-05-24
+ * the push dispatcher was implemented but never wired up — Web Push
+ * was effectively dead code despite the NotificationPreference UI
+ * promising "パートナーの評価が届いたら通知". This map closes the gap.
+ *
+ * `venue_deleted` doesn't map to a push event yet; adding it requires
+ * extending RealtimePushEvent + the copy table + the preference column,
+ * which lands in Release C part 2.
+ */
+const PUSH_KIND_FOR: Partial<Record<RealtimeEvent["kind"], RealtimePushEvent>> = {
+  rating_saved: "partner_rating_added",
+  note_added: "partner_note_added",
+  decision_made: "decision_saved",
+  wedding_date_updated: "wedding_date_set",
+  venue_added: "partner_venue_added",
+  venue_deleted: "partner_venue_deleted",
+};
+
+function pushScopeIdFor(event: RealtimeEvent, projectId: string): string {
+  switch (event.kind) {
+    case "rating_saved":
+    case "note_added":
+    case "decision_made":
+    case "venue_deleted":
+    case "venue_added":
+      return event.venueId;
+    case "wedding_date_updated":
+      return projectId;
+  }
+}
+
+/** Best-effort venue name pull for the push copy. Skipped entirely for
+ *  events that don't have a venue scope. Failure here never blocks the
+ *  push — the copy picker falls back to a placeholder. */
+async function venueNameForPush(event: RealtimeEvent): Promise<string | null> {
+  if (event.kind === "venue_deleted" || event.kind === "venue_added") {
+    return event.venueName;
+  }
+  if (
+    event.kind === "rating_saved" ||
+    event.kind === "note_added" ||
+    event.kind === "decision_made"
+  ) {
+    try {
+      const v = await prisma.venue.findUnique({
+        where: { id: event.venueId },
+        select: { name: true },
+      });
+      return v?.name ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 /**
  * Server-side broadcast for project-scoped semantic events.
@@ -136,4 +196,25 @@ export async function publishRealtimeEvent(
       ...(failureMessage ? { error: failureMessage } : {}),
     },
   });
+
+  // Audit P0-3: also fan the event out to Web Push so members who don't
+  // have the tab open still hear about it. Best-effort — a failed push
+  // never blocks the broadcast path or the underlying DB write. Skips
+  // kinds that have no push mapping (e.g. venue_deleted until its copy
+  // table cell lands).
+  const pushKind = PUSH_KIND_FOR[event.kind];
+  if (pushKind) {
+    try {
+      const venueName = await venueNameForPush(event);
+      await dispatchRealtimeEvent({
+        kind: pushKind,
+        projectId,
+        actorUserId: event.actor.userId,
+        scopeId: pushScopeIdFor(event, projectId),
+        venueName,
+      });
+    } catch (err) {
+      console.warn("[push] dispatchRealtimeEvent threw (suppressed):", err);
+    }
+  }
 }

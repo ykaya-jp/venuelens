@@ -27,6 +27,8 @@ import {
   requireProjectMembership,
   requireVenueAccess,
 } from "@/server/auth";
+import { publishRealtimeEvent, resolveActor } from "@/lib/realtime/publish";
+import { getCoupleMembers } from "@/lib/couple-members";
 
 /**
  * Ensure a `public.users` row exists for the current Supabase auth user.
@@ -237,6 +239,17 @@ export async function saveChildRating(input: {
     revalidateTag(venueScoreTag(parsed.data.venueId), { expire: 0 });
     revalidateTag(projectChecklistTag(projectId), { expire: 0 });
 
+    // Audit P1-10: broadcast so the partner's open client toasts + the
+    // Web Push dispatcher (Audit P0-3) fans out. Best-effort by
+    // publishRealtimeEvent's contract — won't reach the catch below.
+    const actor = await resolveActor(user.id);
+    await publishRealtimeEvent(projectId, {
+      kind: "rating_saved",
+      actor,
+      venueId: parsed.data.venueId,
+      dimensionCount: 1,
+    });
+
     return { success: true as const };
   } catch (e) {
     return handleServerActionError("saveChildRating", e, {
@@ -302,6 +315,17 @@ export async function bulkSetDimensionRating(input: {
 
     revalidateTag(venueScoreTag(parsed.data.venueId), { expire: 0 });
     revalidateTag(projectChecklistTag(projectId), { expire: 0 });
+
+    // Audit P1-10: parent-dimension bulk rates were silently invisible
+    // to the partner before this — only saveRatings (= visit ratings)
+    // broadcast. Same Realtime contract as the per-item save above.
+    const actor = await resolveActor(user.id);
+    await publishRealtimeEvent(projectId, {
+      kind: "rating_saved",
+      actor,
+      venueId: parsed.data.venueId,
+      dimensionCount: parsed.data.itemIds.length,
+    });
 
     return { success: true as const };
   } catch (e) {
@@ -383,15 +407,9 @@ export async function getCoupleChecklistAnswers(venueId: string): Promise<{
   const user = await requireUser();
   const { projectId } = await requireVenueAccess(user.id, venueId);
 
-  // Resolve project members (= same shape as getCoupleRatings)
-  const members = await prisma.projectMember.findMany({
-    where: { projectId, acceptedAt: { not: null } },
-    select: {
-      userId: true,
-      user: { select: { name: true, email: true } },
-    },
-  });
-  const other = members.find((m) => m.userId !== user.id);
+  // Audit P1-25: shared helper with getCoupleRatings — same shape, same
+  // accepted_at filter, single source of truth for "who is in the couple".
+  const { other } = await getCoupleMembers(projectId, user.id);
 
   // Single round-trip: pull every project member's answers for this venue
   // then split by userId in JS. Matches the pattern in `getCoupleRatings`
@@ -423,7 +441,7 @@ export async function getCoupleChecklistAnswers(venueId: string): Promise<{
   return {
     ownScoreByItemId: buildMap(user.id),
     partnerScoreByItemId: other ? buildMap(other.userId) : null,
-    partnerName: other ? other.user?.name ?? other.user?.email ?? null : null,
+    partnerName: other ? other.name ?? other.email ?? null : null,
   };
 }
 
