@@ -43,6 +43,7 @@ import {
 } from "@/lib/rate-limit";
 import { buildVenueWhere, type VenueFilters } from "@/server/actions/venue-filters";
 import { computeCompositeScore } from "@/lib/scoring";
+import { publishRealtimeEvent, resolveActor } from "@/lib/realtime/publish";
 import {
   extractMetadata,
   hasUsefulMetadata,
@@ -317,9 +318,11 @@ export async function deleteVenue(
 
   // Verify venue belongs to user's project AND is still live — calling
   // deleteVenue twice is a no-op rather than a confusing "404."
+  // `name` is carried into the realtime event payload below so the
+  // partner's toast can name the row even after deletedAt is stamped.
   const venue = await prisma.venue.findFirst({
     where: { id: venueId, projectId, deletedAt: null },
-    select: { id: true },
+    select: { id: true, name: true },
   });
   if (!venue) {
     return { success: false, error: "式場が見つかりません" };
@@ -357,6 +360,19 @@ export async function deleteVenue(
   revalidatePath("/explore");
   revalidatePath("/home");
   revalidatePath("/candidates");
+
+  // Broadcast so the partner — whose open client may be reading the same
+  // venue right now — gets a toast and a refresh instead of the page
+  // disappearing in silence (incident 2026-05-24 P0-4). Best-effort: the
+  // helper swallows realtime errors so a flaky socket can't poison the
+  // success path of the delete itself.
+  const actor = await resolveActor(user.id);
+  await publishRealtimeEvent(projectId, {
+    kind: "venue_deleted",
+    actor,
+    venueId,
+    venueName: venue.name,
+  });
 
   return { success: true };
 }

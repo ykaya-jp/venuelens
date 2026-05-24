@@ -89,6 +89,16 @@ export type RealtimeEvent =
       /** ISO date (YYYY-MM-DD) or null when the date was cleared. The
        *  client decides on the toast copy split. */
       weddingDate: string | null;
+    }
+  | {
+      kind: "venue_deleted";
+      actor: RealtimeActor;
+      venueId: string;
+      /** Venue name at the time of deletion. Carried in-band so the
+       *  partner's toast can name the venue ("Aホテルを手放しました") even
+       *  though by the time the event lands the row is already
+       *  soft-deleted and `getVenueHeader` would return null. */
+      venueName: string;
     };
 
 /** The `kind` discriminant exported as a value so consumers can
@@ -99,6 +109,7 @@ export const REALTIME_EVENT_KINDS = [
   "note_added",
   "decision_made",
   "wedding_date_updated",
+  "venue_deleted",
 ] as const satisfies ReadonlyArray<RealtimeEvent["kind"]>;
 
 export type RealtimeEventKind = RealtimeEvent["kind"];

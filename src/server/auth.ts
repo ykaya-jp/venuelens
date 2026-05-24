@@ -74,10 +74,15 @@ export async function requireOwner(userId: string) {
 
 export async function requireVenueAccess(userId: string, venueId: string) {
   const { projectId } = await requireProjectMembership(userId);
-  const venue = await prisma.venue.findUnique({
-    where: { id: venueId },
+  // `deletedAt: null` is mandatory per the schema comment on Venue
+  // ("Every read path that surfaces venues to the user MUST filter by
+  // deletedAt: null"). Before 2026-05-24 this helper used `findUnique`
+  // without the filter, so a write racing against a soft-delete could
+  // land on a tombstoned row and corrupt aggregators downstream.
+  const venue = await prisma.venue.findFirst({
+    where: { id: venueId, projectId, deletedAt: null },
   });
-  if (!venue || venue.projectId !== projectId) {
+  if (!venue) {
     throw new Error("式場が見つからないか、アクセス権がありません");
   }
   return { projectId, venue };
@@ -85,11 +90,17 @@ export async function requireVenueAccess(userId: string, venueId: string) {
 
 export async function requireVisitAccess(userId: string, visitId: string) {
   const { projectId } = await requireProjectMembership(userId);
-  const visit = await prisma.visit.findUnique({
-    where: { id: visitId },
+  // Same deletedAt-on-venue rule as requireVenueAccess — a Visit whose
+  // parent Venue was soft-deleted should be unreachable by writes.
+  const visit = await prisma.visit.findFirst({
+    where: {
+      id: visitId,
+      deletedAt: null,
+      venue: { projectId, deletedAt: null },
+    },
     include: { venue: { select: { projectId: true, id: true } } },
   });
-  if (!visit || visit.venue.projectId !== projectId) {
+  if (!visit) {
     throw new Error("見学記録が見つからないか、アクセス権がありません");
   }
   return { projectId, visit };

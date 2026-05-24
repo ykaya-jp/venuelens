@@ -42,6 +42,7 @@ describe("realtime/events — event vocabulary", () => {
       "note_added",
       "decision_made",
       "wedding_date_updated",
+      "venue_deleted",
     ]);
   });
 

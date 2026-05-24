@@ -56,9 +56,17 @@ export async function saveRatings(
       ),
     );
 
-    // 2) Re-read all ratings inside the same transaction (consistent snapshot)
+    // 2) Re-read ratings inside the same transaction (consistent snapshot).
+    //    Scope is **this visit only**: prior code (`where: { visit: { venueId } }`)
+    //    collapsed every visit on the venue × every project member into a
+    //    single VenueScore avg, which meant the partner changing one
+    //    dimension visibly moved the viewer's own number on the next save
+    //    (= the "夫が下げたのに自分の数字まで動いた" report). Per-visit scope
+    //    keeps the avg meaning "(this visit, all members) avg" — closer to
+    //    what the UI implies — until source = "user_rating" is split per-user
+    //    in a future RFC (P2-29).
     const allRatings = await tx.visitRating.findMany({
-      where: { visit: { venueId } },
+      where: { visitId },
       select: { dimension: true, score: true },
     });
 
@@ -189,8 +197,16 @@ export async function getCoupleRatings(venueId: string) {
   // Get all visit ratings for this venue. Pulling everyone's ratings in
   // one shot (vs two userId-filtered queries) keeps the round-trip
   // count at one and matches what the prior `getPartnerRatings` did.
+  //
+  // `orderBy: { updatedAt: 'asc' }` is load-bearing: the per-(user,
+  // dimension) reducer below relies on "last write wins", so if Prisma
+  // returns rows in storage order (which it does by default), a stale
+  // April rating could mask a fresh October one. Sorting asc makes the
+  // tail of the array = the most recent edit, which the reducer then
+  // overwrites the map with.
   const allRatings = await prisma.visitRating.findMany({
     where: { visit: { venueId } },
+    orderBy: { updatedAt: "asc" },
     select: { userId: true, dimension: true, score: true },
   });
 
@@ -198,7 +214,9 @@ export async function getCoupleRatings(venueId: string) {
     const map: Record<string, number> = {};
     for (const r of allRatings) {
       if (r.userId === userId) {
-        // If multiple ratings per dimension, use latest (last in array)
+        // Latest write wins — relies on the orderBy: { updatedAt: 'asc' }
+        // above so the last visited row for a (user, dimension) pair
+        // overwrites earlier ones.
         map[r.dimension] = Number(r.score);
       }
     }
