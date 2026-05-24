@@ -138,6 +138,8 @@ describe("aggregateOptOutRates", () => {
       notifyPartnerNote: overrides.notifyPartnerNote ?? true,
       notifyDecisionSaved: overrides.notifyDecisionSaved ?? true,
       notifyWeddingDateSet: overrides.notifyWeddingDateSet ?? true,
+      notifyPartnerVenueAdded: overrides.notifyPartnerVenueAdded ?? true,
+      notifyPartnerVenueDeleted: overrides.notifyPartnerVenueDeleted ?? true,
     };
   }
 

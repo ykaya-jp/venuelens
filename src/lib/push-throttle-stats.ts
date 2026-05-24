@@ -44,6 +44,8 @@ export interface PreferenceOptOutRow {
   notifyPartnerNote: boolean;
   notifyDecisionSaved: boolean;
   notifyWeddingDateSet: boolean;
+  notifyPartnerVenueAdded: boolean;
+  notifyPartnerVenueDeleted: boolean;
 }
 
 export interface PushEventStats {
@@ -134,6 +136,8 @@ const EVENT_TO_PREF_KEY: Record<RealtimePushEvent, keyof PreferenceOptOutRow> = 
   partner_note_added: "notifyPartnerNote",
   decision_saved: "notifyDecisionSaved",
   wedding_date_set: "notifyWeddingDateSet",
+  partner_venue_added: "notifyPartnerVenueAdded",
+  partner_venue_deleted: "notifyPartnerVenueDeleted",
 };
 
 /**
@@ -172,5 +176,9 @@ export function pushEventLabel(kind: RealtimePushEvent): string {
       return "decision saved";
     case "wedding_date_set":
       return "wedding date set";
+    case "partner_venue_added":
+      return "partner venue added";
+    case "partner_venue_deleted":
+      return "partner venue deleted";
   }
 }

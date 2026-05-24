@@ -171,17 +171,19 @@ export function CompareRedesigned() {
     [selected],
   );
 
-  // Lazily fetch per-venue partner ratings the first time the user
-  // enables the "意見差を上に" sort (and any time the selection
-  // changes while it's on). Skips venues already cached in
-  // `partnerMap` so toggling off/on is free after the first fetch.
+  // Fetch per-venue couple ratings for every selected venue, regardless
+  // of the "意見差を上に" toggle — the audit P0-5 / P1-9 fix needs them
+  // present at all times so DimensionCell can render the dual own /
+  // partner dots. Previously fetched lazily (only when partner-diff sort
+  // turned on), which left the rest of the matrix in the dark about
+  // which side authored a given number. Cached in `partnerMap` so a
+  // selection change only round-trips for newly added venues.
   //
   // Every setState is deferred through `queueMicrotask` so we don't
   // trip React 19's `set-state-in-effect` guard. The fetch is async
   // anyway — the body just kicks it off, the awaited `.then()` runs
   // after the current render cycle.
   useEffect(() => {
-    if (!sortByPartnerDiff) return;
     const ids = selectedKey ? selectedKey.split(",").filter(Boolean) : [];
     const missing = ids.filter((id) => !(id in partnerMap));
     if (missing.length === 0) return;
@@ -219,7 +221,7 @@ export function CompareRedesigned() {
     // `missing` guard above handles cache invalidation on selection
     // change explicitly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortByPartnerDiff, selectedKey]);
+  }, [selectedKey]);
 
   // Pool defines which venues are eligible for the chip picker. The
   // owner filter narrows the pool; selected venues that fall outside
@@ -788,12 +790,23 @@ export function CompareRedesigned() {
                         isHeadToHead &&
                         (adv?.kind === "left-strong" || adv?.kind === "right-strong") &&
                         advantageWinner;
+                      // Audit P0-5 / P1-9: pluck per-user scores from the
+                      // partnerMap cache (populated by the effect above
+                      // for every selected venue). null = the user hasn't
+                      // graded this dimension yet — DimensionCell renders
+                      // nothing for that side so the dual dot row only
+                      // shows attributions the viewer can actually trust.
+                      const couple = partnerMap[venueId];
+                      const ownScore = couple?.own?.[row.dim.id] ?? null;
+                      const partnerScore = couple?.other?.[row.dim.id] ?? null;
                       return (
                         <DimensionCell
                           key={venueId}
                           score={score}
                           isWinner={advantageWinner}
                           strong={isStrong}
+                          ownScore={ownScore}
+                          partnerScore={partnerScore}
                         />
                       );
                     })}
@@ -1046,11 +1059,46 @@ function DimensionCell({
   score,
   isWinner,
   strong = false,
+  ownScore = null,
+  partnerScore = null,
 }: {
   score: number | null;
   isWinner: boolean;
   strong?: boolean;
+  /** Viewer's own per-dimension score for this venue, or null if not
+   *  yet graded by them. */
+  ownScore?: number | null;
+  /** Partner's per-dimension score for this venue, or null if no
+   *  partner / not yet graded. */
+  partnerScore?: number | null;
 }) {
+  // Shared dual-dot row — rendered under both the "no score" and
+  // "has score" branches so the viewer can see "夫=3 / 妻=未評価"
+  // even when the consolidated avg is blank.
+  const dualDot =
+    ownScore !== null || partnerScore !== null ? (
+      <div className="mt-0.5 flex items-center justify-center gap-1.5 text-[9.5px] tabular-nums">
+        {ownScore !== null && (
+          <span className="inline-flex items-center gap-0.5 text-[color:var(--primary)]">
+            <span
+              aria-hidden
+              className="h-1.5 w-1.5 rounded-full bg-[var(--primary)]"
+            />
+            {ownScore.toFixed(1)}
+          </span>
+        )}
+        {partnerScore !== null && (
+          <span className="inline-flex items-center gap-0.5 text-secondary">
+            <span
+              aria-hidden
+              className="h-1.5 w-1.5 rounded-full bg-secondary"
+            />
+            {partnerScore.toFixed(1)}
+          </span>
+        )}
+      </div>
+    ) : null;
+
   if (score === null) {
     return (
       <div
@@ -1062,6 +1110,7 @@ function DimensionCell({
       >
         <div className="h-1.5 w-[70%] rounded-full bg-muted" />
         <span className="text-[11px] text-muted-foreground/50">—</span>
+        {dualDot}
       </div>
     );
   }
@@ -1100,6 +1149,7 @@ function DimensionCell({
       >
         {score.toFixed(1)}
       </span>
+      {dualDot}
     </div>
   );
 }

@@ -142,6 +142,17 @@ export async function createVenue(input: VenueInput) {
     source: "manual",
   });
 
+  // Audit P1-20: broadcast so the partner's open client paints a toast
+  // and the Web Push dispatcher (Audit P0-3) fans out. Best-effort —
+  // failures here never block the venue creation success path.
+  const actor = await resolveActor(user.id);
+  await publishRealtimeEvent(projectId, {
+    kind: "venue_added",
+    actor,
+    venueId: venue.id,
+    venueName: venue.name,
+  });
+
   return { success: true as const, venue };
 }
 

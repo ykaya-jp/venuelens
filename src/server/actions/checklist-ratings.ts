@@ -27,6 +27,7 @@ import {
   requireProjectMembership,
   requireVenueAccess,
 } from "@/server/auth";
+import { publishRealtimeEvent, resolveActor } from "@/lib/realtime/publish";
 
 /**
  * Ensure a `public.users` row exists for the current Supabase auth user.
@@ -237,6 +238,17 @@ export async function saveChildRating(input: {
     revalidateTag(venueScoreTag(parsed.data.venueId), { expire: 0 });
     revalidateTag(projectChecklistTag(projectId), { expire: 0 });
 
+    // Audit P1-10: broadcast so the partner's open client toasts + the
+    // Web Push dispatcher (Audit P0-3) fans out. Best-effort by
+    // publishRealtimeEvent's contract — won't reach the catch below.
+    const actor = await resolveActor(user.id);
+    await publishRealtimeEvent(projectId, {
+      kind: "rating_saved",
+      actor,
+      venueId: parsed.data.venueId,
+      dimensionCount: 1,
+    });
+
     return { success: true as const };
   } catch (e) {
     return handleServerActionError("saveChildRating", e, {
@@ -302,6 +314,17 @@ export async function bulkSetDimensionRating(input: {
 
     revalidateTag(venueScoreTag(parsed.data.venueId), { expire: 0 });
     revalidateTag(projectChecklistTag(projectId), { expire: 0 });
+
+    // Audit P1-10: parent-dimension bulk rates were silently invisible
+    // to the partner before this — only saveRatings (= visit ratings)
+    // broadcast. Same Realtime contract as the per-item save above.
+    const actor = await resolveActor(user.id);
+    await publishRealtimeEvent(projectId, {
+      kind: "rating_saved",
+      actor,
+      venueId: parsed.data.venueId,
+      dimensionCount: parsed.data.itemIds.length,
+    });
 
     return { success: true as const };
   } catch (e) {

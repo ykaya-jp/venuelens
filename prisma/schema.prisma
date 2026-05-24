@@ -265,6 +265,13 @@ model ProjectInvitation {
   projectId    String    @map("project_id") @db.Uuid
   token        String    @unique
   createdBy    String    @map("created_by") @db.Uuid
+  /// Audit P0-1: optional recipient email. When set, `consumeInvitationLink`
+  /// rejects callers whose Supabase Auth email differs (case-insensitive),
+  /// closing the URL-leak hijack vector. Null on rows created before the
+  /// 2026-05-24 migration — those are warned-through unchecked until their
+  /// 30-day TTL expires, after which all live invitations will have a
+  /// recipient bound.
+  invitedEmail String?   @map("invited_email")
   expiresAt    DateTime  @map("expires_at")
   consumedAt   DateTime? @map("consumed_at")
   consumedBy   String?   @map("consumed_by") @db.Uuid
@@ -1034,6 +1041,13 @@ model NotificationPreference {
   notifyPartnerNote     Boolean               @default(true) @map("notify_partner_note")
   notifyDecisionSaved   Boolean               @default(true) @map("notify_decision_saved")
   notifyWeddingDateSet  Boolean               @default(true) @map("notify_wedding_date_set")
+  /// Audit P1-20 / P1-21: partner venue add / delete push toggles. Paired
+  /// 1:1 with partner_venue_added / partner_venue_deleted Realtime push
+  /// kinds. Defaults true so the first roll-out doesn't require an extra
+  /// opt-in step; users disable per-channel from /mypage like other
+  /// notify_* flags.
+  notifyPartnerVenueAdded   Boolean           @default(true) @map("notify_partner_venue_added")
+  notifyPartnerVenueDeleted Boolean           @default(true) @map("notify_partner_venue_deleted")
   createdAt             DateTime              @default(now()) @map("created_at")
   updatedAt             DateTime              @updatedAt @map("updated_at")
 
