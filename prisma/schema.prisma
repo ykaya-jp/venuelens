@@ -160,6 +160,7 @@ model User {
   venueMemos               VenueMemo[]
   favorites                VenueFavorite[]
   venueChecklistAnswers    VenueChecklistAnswer[]
+  authoredEstimates        Estimate[]              @relation("EstimateAuthor")
   notificationPreference   NotificationPreference?
   notifications            Notification[]
   createdInvitations       ProjectInvitation[]     @relation("ProjectInvitationCreator")
@@ -421,6 +422,11 @@ model Estimate {
   id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   venueId        String             @map("venue_id") @db.Uuid
   projectId      String             @map("project_id") @db.Uuid
+  /// Audit P2-29: who originally created this estimate row. Nullable so
+  /// legacy rows (pre-2026-05-25 migration) still display without a
+  /// backfill — UI treats null as "誰の入力か不明". On user delete the
+  /// row survives with NULL author (ON DELETE SET NULL).
+  createdBy      String?            @map("created_by") @db.Uuid
   version        Int                @default(1)
   total          Int
   predictedFinal Int?               @map("predicted_final")
@@ -437,10 +443,12 @@ model Estimate {
 
   venue   Venue          @relation(fields: [venueId], references: [id], onDelete: Cascade)
   project Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author  User?          @relation("EstimateAuthor", fields: [createdBy], references: [id], onDelete: SetNull)
   items   EstimateItem[]
 
   @@index([venueId])
   @@index([projectId])
+  @@index([createdBy])
   // Many hot paths (matrix, venues detail, comparison, coach context) select
   // the latest estimate for a venue via `orderBy: { version: desc }, take: 1`.
   // A composite (venueId, version desc) index lets Postgres resolve that in

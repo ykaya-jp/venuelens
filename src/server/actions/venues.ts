@@ -583,7 +583,17 @@ async function getVenueEstimatesCached(id: string, projectId: string) {
   const venue = await prisma.venue.findFirst({
     where: { id, projectId, deletedAt: null },
     select: {
-      estimates: { include: { items: true }, orderBy: { version: "desc" } },
+      estimates: {
+        include: {
+          items: true,
+          // Audit P2-29: surface the original author so the venue
+          // detail UI can label "妻が作成した見積" vs "夫が作成した
+          // 見積". `email` falls in only when `name` is null — same
+          // fallback shape as getCoupleRatings / getCoupleMembers.
+          author: { select: { id: true, name: true, email: true } },
+        },
+        orderBy: { version: "desc" },
+      },
     },
   });
 
