@@ -123,21 +123,51 @@ export function ChildRatingPanel({
       setScores((prev) => ({ ...prev, [itemId]: nextScore }));
       setPendingItemId(itemId);
       startTransition(async () => {
-        const result = await saveChildRating({
-          venueId,
-          itemId,
-          score: nextScore,
-        });
-        setPendingItemId((cur) => (cur === itemId ? null : cur));
-        if (!result.success) {
-          toast.error("評価を残せませんでした");
-          // Rollback the optimistic write so the chip state reflects
-          // server reality. Without this the user would see a "saved"
-          // chip that is actually not on the server.
+        // try/catch is mandatory here — a server-action throw inside a
+        // startTransition callback bubbles to the page error boundary and
+        // the user gets bounced to (app)/venues/[id]/error.tsx with an
+        // opaque "エラーID" overlay. The server action now returns
+        // `{ success: false, error }` for known failures (= P2003 partner
+        // sync, P2002, validation), but a network drop or unexpected
+        // runtime error can still throw, so we defend in depth.
+        const rollback = () => {
           setScores((prev) => ({
             ...prev,
             [itemId]: items.find((i) => i.itemId === itemId)?.initialScore ?? null,
           }));
+        };
+        try {
+          const result = await saveChildRating({
+            venueId,
+            itemId,
+            score: nextScore,
+          });
+          setPendingItemId((cur) => (cur === itemId ? null : cur));
+          if (!result.success) {
+            console.error("[ChildRatingPanel] saveChildRating returned failure", result.error);
+            const msg =
+              result.error?.formErrors?.[0] ?? "評価を残せませんでした";
+            // Intentional: no inline "もう一度" retry button to avoid a
+            // self-recursive useCallback dependency (react-hooks/immutability).
+            // Users can simply re-tap a chip to retry — the chip itself is
+            // the action surface, so a separate retry CTA is redundant.
+            toast.error(msg, { duration: 6000 });
+            rollback();
+          }
+        } catch (e) {
+          // Surface redirects (e.g. session expired → /login) untouched —
+          // these are not bugs, they're React/Next telling us to navigate.
+          if (
+            e instanceof Error &&
+            typeof (e as { digest?: unknown }).digest === "string" &&
+            (e as unknown as { digest: string }).digest.startsWith("NEXT_REDIRECT")
+          ) {
+            throw e;
+          }
+          setPendingItemId((cur) => (cur === itemId ? null : cur));
+          console.error("[ChildRatingPanel] saveChildRating threw", e);
+          toast.error("通信エラーで評価を残せませんでした", { duration: 6000 });
+          rollback();
         }
       });
     },

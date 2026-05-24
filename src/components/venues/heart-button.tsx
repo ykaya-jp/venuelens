@@ -48,7 +48,11 @@ export function HeartButton({ venueId, initialFavorite }: HeartButtonProps) {
     try {
       await toggleFavorite(venueId);
       toast.success(next ? "候補に追加しました" : "候補から外しました", {
-        duration: 2000,
+        // 4 s (was 2 s) — incident 2026-05-24: at 2 s a couple browsing on
+        // dim mobile while comparing two candidates could miss the toast
+        // entirely and report "ハートを押しても何も起きない". Long enough
+        // to read, short enough to not stack on rapid double-tap.
+        duration: 4000,
         action: !next
           ? { label: "戻す", onClick: () => void handleToggle() }
           : undefined,
@@ -56,9 +60,20 @@ export function HeartButton({ venueId, initialFavorite }: HeartButtonProps) {
       // Refresh the server tree so any parent-owned favorite snapshot
       // (Explore/Candidates lists) reflects the change.
       router.refresh();
-    } catch {
+    } catch (e) {
+      // Surface NEXT_REDIRECT (session expired → /login) untouched.
+      if (
+        e instanceof Error &&
+        typeof (e as { digest?: unknown }).digest === "string" &&
+        (e as unknown as { digest: string }).digest.startsWith("NEXT_REDIRECT")
+      ) {
+        throw e;
+      }
+      console.error("[HeartButton] toggleFavorite threw", e);
       setFavorite(previous); // revert optimistic state on failure
-      toast.error("うまく残せませんでした", {
+      const detail = e instanceof Error && e.message ? `: ${e.message.slice(0, 80)}` : "";
+      toast.error(`ハートを残せませんでした${detail}`, {
+        duration: 6000,
         action: { label: "もう一度", onClick: () => void handleToggle() },
       });
     } finally {

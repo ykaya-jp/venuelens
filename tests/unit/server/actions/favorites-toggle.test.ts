@@ -67,12 +67,23 @@ vi.mock("@/server/db", () => ({
     projectMember: {
       findFirst: vi.fn(async () => ({ projectId: "proj-1", role: "owner" })),
     },
+    // 2026-05-24: toggleFavorite now performs a defensive `public.users`
+    // upsert before the favorite write so a partner whose auth.users row
+    // never synced to public.users does not hit P2003. The unit-mock
+    // just no-ops so the suite still focuses on status-sync behaviour.
+    user: {
+      upsert: vi.fn(async () => ({ id: "user-1" })),
+    },
     $transaction: (cb: (tx: unknown) => Promise<void>) => transactionMock(cb),
   },
 }));
 
 vi.mock("@/server/auth", async () => ({
-  requireUser: vi.fn(async () => ({ id: "user-1" })),
+  requireUser: vi.fn(async () => ({
+    id: "user-1",
+    email: "user-1@example.com",
+    user_metadata: { name: "Test User" },
+  })),
   requireProjectMembership: vi.fn(async () => ({
     projectId: "proj-1",
     role: "owner",

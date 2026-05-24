@@ -7,6 +7,7 @@ import { getVenues } from "@/server/actions/venues";
 import { getDecision } from "@/server/actions/decisions";
 import { getCurrentUserName } from "@/server/actions/home";
 import { getCoupleWeights } from "@/server/actions/weights";
+import { requireUser } from "@/server/auth";
 import { CandidatesView } from "@/components/candidates/candidates-view";
 import { CoupleGapSection } from "@/components/candidates/couple-gap-section";
 
@@ -90,7 +91,7 @@ async function CandidatesContent({
 }: {
   initialTab: "shortlist" | "compare" | "decision" | undefined;
 }) {
-  const [favorites, venues, decision, userName, coupleWeights] = await Promise.all([
+  const [favorites, venues, decision, userName, coupleWeights, currentUser] = await Promise.all([
     getFavorites("mine"),
     getVenues(),
     getDecision(),
@@ -102,7 +103,14 @@ async function CandidatesContent({
     // stays defensive) we fall back to null → the view behaves exactly as
     // W11 did (equal weights, no couple toggle).
     getCoupleWeights().catch(() => null),
+    // CurrentUser is needed to distinguish "me" vs "partner" in the
+    // favorite filter. Hard-coding `isFavorite={true}` for partner-only
+    // venues paints the heart filled even when the viewer hasn't added
+    // it, which the user then mistakes for an already-added card —
+    // root cause of "ハートを押しても何も起きない" (incident 2026-05-24).
+    requireUser(),
   ]);
+  const currentUserId = currentUser.id;
 
   // venueOptions carries the minimum fields the view + ceremony need: id/name
   // for selection, photoUrls[0] so the DecisionCeremony hero card can paint
@@ -126,6 +134,7 @@ async function CandidatesContent({
       initialTab={initialTab}
       weights={coupleWeights?.mine ?? null}
       coupleWeights={coupleWeights}
+      currentUserId={currentUserId}
     />
   );
 }
