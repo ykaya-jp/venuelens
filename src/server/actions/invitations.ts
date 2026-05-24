@@ -4,10 +4,17 @@ import { z } from "zod";
 import { headers } from "next/headers";
 import { prisma } from "@/server/db";
 import { revalidatePath, revalidateTag } from "next/cache";
+import type { Prisma } from "@/generated/prisma/client";
 import { requireUser, requireOwner, requireProjectMembership } from "@/server/auth";
 import { captureServerEvent } from "@/lib/analytics/server";
 import { sendEmail, isEmailAvailable } from "@/lib/email/send";
 import { renderPartnerInviteEmail } from "@/lib/email/templates/partner-invite";
+
+/** Tx-capable Prisma client — the body of acceptInvitation runs inside a
+ *  transaction (P1-19 race fix), so helpers that fan out into multiple
+ *  reads must accept either the top-level prisma client or the tx scope.
+ */
+type PrismaLike = typeof prisma | Prisma.TransactionClient;
 
 const inviteSchema = z.object({
   email: z
@@ -140,6 +147,7 @@ export async function invitePartner(email: string) {
  *     member (accepted or pending).
  */
 async function isAutoCreatedEmptyProject(
+  client: PrismaLike,
   projectId: string,
   userId: string,
   role: string,
@@ -148,18 +156,18 @@ async function isAutoCreatedEmptyProject(
 
   const [memberCount, venueCount, estimateCount, decisionCount] =
     await Promise.all([
-      prisma.projectMember.count({ where: { projectId } }),
-      prisma.venue.count({ where: { projectId, deletedAt: null } }),
-      prisma.estimate.count({
+      client.projectMember.count({ where: { projectId } }),
+      client.venue.count({ where: { projectId, deletedAt: null } }),
+      client.estimate.count({
         where: { venue: { projectId, deletedAt: null } },
       }),
-      prisma.decision.count({ where: { projectId } }),
+      client.decision.count({ where: { projectId } }),
     ]);
 
   // A fresh auto-project has exactly one ProjectMember (the owner, this
   // user). Any extra membership means a partner was invited/accepted and we
   // must not silently delete the project.
-  const singleOwnerMembership = await prisma.projectMember.findMany({
+  const singleOwnerMembership = await client.projectMember.findMany({
     where: { projectId },
     select: { userId: true, role: true },
   });
@@ -184,111 +192,132 @@ async function isAutoCreatedEmptyProject(
 export async function acceptInvitation(invitationId: string) {
   const user = await requireUser();
 
-  const membership = await prisma.projectMember.findUnique({
-    where: { id: invitationId },
-    include: { user: true },
+  // P1-19 race fix: prior code ran SELECT-then-UPDATE across separate
+  // transactions, letting two near-simultaneous accept clicks (rapid
+  // double-tap, two tabs) both pass the `acceptedAt: null` gate and
+  // both try to delete the user's auto-project. Wrap the whole flow
+  // in a transaction and take a pg advisory xact lock keyed on the
+  // invitationId, so the second click waits for the first to commit
+  // and then deterministically hits the "already accepted" branch.
+  const result = await prisma.$transaction(async (tx) => {
+    // Serialize concurrent accepts of the SAME invitationId. Transaction-
+    // scoped lock auto-releases on commit/rollback; safe under Supabase
+    // PgBouncer transaction-mode pooling because the lock and the
+    // accompanying writes share one connection for the tx lifetime.
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${invitationId}::text, 0))`;
+
+    const membership = await tx.projectMember.findUnique({
+      where: { id: invitationId },
+      include: { user: true },
+    });
+
+    if (!membership) {
+      return { success: false as const, error: "招待が見つかりません" };
+    }
+
+    if (!user.email || membership.user.email !== user.email.toLowerCase()) {
+      return { success: false as const, error: "この招待はあなた宛ではありません" };
+    }
+
+    // Email verification gate: blocks "sign up with someone else's email +
+    // claim their invitation" abuse. Accept any of three equivalent
+    // signals so we don't reject legitimate OAuth users:
+    //   1. email_confirmed_at set — classic email/password confirm flow
+    //   2. user.user_metadata.email_verified — Supabase surfaces this
+    //      for most OAuth providers (Google, GitHub)
+    //   3. identities[].identity_data.email_verified — the provider-level
+    //      flag Supabase normalises into identities when the top-level
+    //      metadata isn't populated (some Google flows hit this)
+    const identitiesVerified = (
+      user.identities as Array<{
+        identity_data?: { email_verified?: boolean };
+      }> | undefined
+    )?.some((i) => i.identity_data?.email_verified === true);
+    const emailConfirmed =
+      (user.email_confirmed_at ?? null) !== null ||
+      user.user_metadata?.email_verified === true ||
+      identitiesVerified === true;
+    if (!emailConfirmed) {
+      return {
+        success: false as const,
+        error:
+          "メールアドレスの確認が必要です。受信メールの確認リンクをタップしてください。",
+      };
+    }
+
+    if (membership.acceptedAt) {
+      return { success: false as const, error: "すでに承諾済みです" };
+    }
+
+    // Already-joined guard. An existing user who signed up on their own has an
+    // auto-created empty project (getOrCreateProject on first /home visit). If
+    // that's their only active membership AND the project has no real data,
+    // we silently drop it and let them join the inviter's project — otherwise
+    // they'd be locked out of every invitation. Projects with actual content
+    // (venues, estimates, decisions, partner) are preserved and we return an
+    // explanatory error so the transfer is explicit on both sides.
+    const existingMemberships = await tx.projectMember.findMany({
+      where: {
+        userId: user.id,
+        acceptedAt: { not: null },
+        NOT: { projectId: membership.projectId },
+      },
+      select: { id: true, projectId: true, role: true },
+    });
+
+    // Probe each membership in parallel — each call is independent (touches
+    // a different projectId) and itself fans out to 5 queries inside, so
+    // the serial loop multiplied N×5 RTTs unnecessarily. Steady state is
+    // N=0 or 1; the parallel shape doesn't regress that case while making
+    // the rare N>1 case cheap.
+    const discardable = await Promise.all(
+      existingMemberships.map((m) =>
+        isAutoCreatedEmptyProject(tx, m.projectId, user.id, m.role),
+      ),
+    );
+    if (discardable.some((canAutoDiscard) => !canAutoDiscard)) {
+      return {
+        success: false as const,
+        error:
+          "すでに別の式場さがしに参加しています。パートナーと同じ場所に合流するには、招待したご本人にもう一度招待をお願いしてください。",
+      };
+    }
+
+    // All blocking memberships point at discardable auto-projects — remove
+    // them. Owner memberships trigger project deletion (cascades to venues
+    // etc.), non-owner memberships are just the row. Deletes target
+    // distinct rows so Promise.all is safe.
+    await Promise.all(
+      existingMemberships.map((existing) =>
+        existing.role === "owner"
+          ? tx.project.delete({ where: { id: existing.projectId } })
+          : tx.projectMember.delete({ where: { id: existing.id } }),
+      ),
+    );
+
+    // Atomic conditional update: only flip acceptedAt if it's still null.
+    // The advisory lock above already serialises concurrent callers; this
+    // updateMany is defense-in-depth in case the lock is bypassed by a
+    // future code path that forgets to acquire it.
+    const res = await tx.projectMember.updateMany({
+      where: { id: invitationId, acceptedAt: null },
+      data: { acceptedAt: new Date() },
+    });
+    if (res.count !== 1) {
+      return { success: false as const, error: "すでに承諾済みか、招待が無効です" };
+    }
+
+    return { success: true as const, projectId: membership.projectId };
   });
 
-  if (!membership) {
-    return { success: false as const, error: "招待が見つかりません" };
+  // Next.js revalidate is a side-effect on the framework cache, not the DB,
+  // so it has no place inside the transaction.
+  if (result.success) {
+    revalidateTag(`project:${result.projectId}`, { expire: 0 });
+    revalidatePath("/home");
+    revalidatePath("/mypage");
   }
-
-  if (!user.email || membership.user.email !== user.email.toLowerCase()) {
-    return { success: false as const, error: "この招待はあなた宛ではありません" };
-  }
-
-  // Email verification gate: blocks "sign up with someone else's email +
-  // claim their invitation" abuse. Accept any of three equivalent
-  // signals so we don't reject legitimate OAuth users:
-  //   1. email_confirmed_at set — classic email/password confirm flow
-  //   2. user.user_metadata.email_verified — Supabase surfaces this
-  //      for most OAuth providers (Google, GitHub)
-  //   3. identities[].identity_data.email_verified — the provider-level
-  //      flag Supabase normalises into identities when the top-level
-  //      metadata isn't populated (some Google flows hit this)
-  const identitiesVerified = (
-    user.identities as Array<{
-      identity_data?: { email_verified?: boolean };
-    }> | undefined
-  )?.some((i) => i.identity_data?.email_verified === true);
-  const emailConfirmed =
-    (user.email_confirmed_at ?? null) !== null ||
-    user.user_metadata?.email_verified === true ||
-    identitiesVerified === true;
-  if (!emailConfirmed) {
-    return {
-      success: false as const,
-      error:
-        "メールアドレスの確認が必要です。受信メールの確認リンクをタップしてください。",
-    };
-  }
-
-  if (membership.acceptedAt) {
-    return { success: false as const, error: "すでに承諾済みです" };
-  }
-
-  // Already-joined guard. An existing user who signed up on their own has an
-  // auto-created empty project (getOrCreateProject on first /home visit). If
-  // that's their only active membership AND the project has no real data,
-  // we silently drop it and let them join the inviter's project — otherwise
-  // they'd be locked out of every invitation. Projects with actual content
-  // (venues, estimates, decisions, partner) are preserved and we return an
-  // explanatory error so the transfer is explicit on both sides.
-  const existingMemberships = await prisma.projectMember.findMany({
-    where: {
-      userId: user.id,
-      acceptedAt: { not: null },
-      NOT: { projectId: membership.projectId },
-    },
-    select: { id: true, projectId: true, role: true },
-  });
-
-  // Probe each membership in parallel — each call is independent (touches
-  // a different projectId) and itself fans out to 5 queries inside, so
-  // the serial loop multiplied N×5 RTTs unnecessarily. Steady state is
-  // N=0 or 1; the parallel shape doesn't regress that case while making
-  // the rare N>1 case cheap.
-  const discardable = await Promise.all(
-    existingMemberships.map((m) =>
-      isAutoCreatedEmptyProject(m.projectId, user.id, m.role),
-    ),
-  );
-  if (discardable.some((canAutoDiscard) => !canAutoDiscard)) {
-    return {
-      success: false as const,
-      error:
-        "すでに別の式場さがしに参加しています。パートナーと同じ場所に合流するには、招待したご本人にもう一度招待をお願いしてください。",
-    };
-  }
-
-  // All blocking memberships point at discardable auto-projects — remove
-  // them. Owner memberships trigger project deletion (cascades to venues
-  // etc.), non-owner memberships are just the row. Deletes target
-  // distinct rows so Promise.all is safe.
-  await Promise.all(
-    existingMemberships.map((existing) =>
-      existing.role === "owner"
-        ? prisma.project.delete({ where: { id: existing.projectId } })
-        : prisma.projectMember.delete({ where: { id: existing.id } }),
-    ),
-  );
-
-  // Atomic conditional update: only flip acceptedAt if it's still null.
-  // Prevents a race where two rapid accepts both pass the SELECT-then-UPDATE gate.
-  const res = await prisma.projectMember.updateMany({
-    where: { id: invitationId, acceptedAt: null },
-    data: { acceptedAt: new Date() },
-  });
-  if (res.count !== 1) {
-    return { success: false as const, error: "すでに承諾済みか、招待が無効です" };
-  }
-
-  revalidateTag(`project:${membership.projectId}`, { expire: 0 });
-  revalidatePath("/home");
-  // Partner status is also surfaced on /mypage; refresh that route's cache
-  // so the user sees the accepted state without a manual reload.
-  revalidatePath("/mypage");
-  return { success: true as const };
+  return result;
 }
 
 /**

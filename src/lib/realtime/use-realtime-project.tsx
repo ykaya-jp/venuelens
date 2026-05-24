@@ -57,6 +57,7 @@ function dedupKey(event: RealtimeEvent): string {
   switch (event.kind) {
     case "rating_saved":
     case "decision_made":
+    case "venue_deleted":
       return `${event.kind}:${event.venueId}:${event.actor.userId}`;
     case "note_added":
       return `${event.kind}:${event.visitId}:${event.actor.userId}`;
@@ -78,6 +79,11 @@ function toastCopy(event: RealtimeEvent): { kind: "info" | "success"; msg: strin
       return event.weddingDate
         ? { kind: "success", msg: `${name}さんが挙式日を更新しました` }
         : { kind: "info", msg: `${name}さんが挙式日をクリアしました` };
+    case "venue_deleted":
+      // Deliberately info (not error) — 手放す is a normal couple action.
+      // Naming the venue in-band lets the partner see exactly which row
+      // vanished without having to refresh and notice the empty slot.
+      return { kind: "info", msg: `${name}さんが「${event.venueName}」を手放しました` };
   }
 }
 
@@ -85,13 +91,15 @@ function toastCopy(event: RealtimeEvent): { kind: "info" | "success"; msg: strin
  *  data the user is currently looking at probably needs to redraw.
  *  Decision / wedding-date are global enough to refresh always; rating
  *  + note refresh too because the venue + visit pages display the
- *  affected rows directly. */
+ *  affected rows directly. venue_deleted refreshes because the partner
+ *  might be reading the very page that just got soft-deleted. */
 function shouldRefresh(event: RealtimeEvent): boolean {
   switch (event.kind) {
     case "rating_saved":
     case "note_added":
     case "decision_made":
     case "wedding_date_updated":
+    case "venue_deleted":
       return true;
   }
 }

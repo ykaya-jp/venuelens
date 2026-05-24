@@ -81,6 +81,16 @@ async function toggleFavoriteImpl(venueId: string): Promise<{ isFavorite: boolea
   // silently drop the venue out of partner's "candidates" chip even
   // though partner still loves it. Computed inside the tx after the
   // toggle so the count is post-change.
+  // Serializable isolation: the heart-off → status-demote branch reads
+  // `venueFavorite.count` to decide whether the project as a whole still
+  // loves this venue. Under READ COMMITTED, a concurrent partner heart-on
+  // committing on a separate connection is invisible, so a demote can fire
+  // even though the partner just favorited — leaving "favorite=true but
+  // status=researching" inconsistent. Serializable serialises the count
+  // against any conflicting heart write, with Postgres retrying the
+  // loser; Prisma surfaces SerializationError which the outer try/catch
+  // already normalises into `{ isFavorite: previous, error }` for the
+  // client.
   const statusUpdate = await prisma.$transaction(
     async (tx): Promise<VenueStatus | null> => {
       if (existing) {
@@ -115,6 +125,7 @@ async function toggleFavoriteImpl(venueId: string): Promise<{ isFavorite: boolea
       }
       return null;
     },
+    { isolationLevel: "Serializable" },
   );
 
   revalidateTag(`project:${projectId}`, { expire: 0 });
