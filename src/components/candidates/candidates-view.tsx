@@ -11,7 +11,7 @@ import { FavoriteFilter } from "@/components/candidates/favorite-filter";
 import { VenueCard } from "@/components/venues/venue-card";
 import { DecisionSummaryCard } from "@/components/candidates/decision-summary-card";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Heart, BarChart3, Trophy, PartyPopper, Loader2, Sparkles, Info } from "lucide-react";
+import { Heart, BarChart3, Trophy, PartyPopper, Loader2, Sparkles, Info, User, Users } from "lucide-react";
 import { getFavorites } from "@/server/actions/favorites";
 import { makeDecision, cancelDecision } from "@/server/actions/decisions";
 import { toast } from "sonner";
@@ -433,6 +433,7 @@ export function CandidatesView({
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, x: -100, transition: { duration: 0.4 } }}
                           transition={{ delay: Math.min(index, 4) * 0.06, duration: 0.42, ease: [0.16, 1, 0.3, 1] }}
+                          className="relative"
                         >
                           <VenueCard
                             venue={fav.venue}
@@ -440,6 +441,37 @@ export function CandidatesView({
                             favoritedBy={labelsFor(fav)}
                             weights={activeWeights}
                           />
+                          {/* Audit P0-6: surface which weighting mode the
+                              ★ badge currently uses. Without this, the
+                              ranked number on each card silently swaps
+                              meaning when the WeightModeToggle flips —
+                              users said they remembered "A=4.6" in
+                              "自分" mode, returned in "ふたり" mode,
+                              and felt the app lied to them. The pill is
+                              ornamental + pointer-events-none so it
+                              doesn't catch taps meant for the card. */}
+                          {hasPartner && (
+                            <span
+                              aria-label={
+                                weightMode === "couple"
+                                  ? "ふたりの合成スコアでの順位"
+                                  : "自分の優先度でのスコア"
+                              }
+                              className="pointer-events-none absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-card/85 px-1.5 py-0.5 text-[9.5px] tracking-[0.04em] text-muted-foreground shadow-sm backdrop-blur-sm"
+                            >
+                              {weightMode === "couple" ? (
+                                <>
+                                  <Users className="h-2.5 w-2.5" aria-hidden />
+                                  ふたり
+                                </>
+                              ) : (
+                                <>
+                                  <User className="h-2.5 w-2.5" aria-hidden />
+                                  自分
+                                </>
+                              )}
+                            </span>
+                          )}
                           {/* W11-2: per-venue "この式場を選ぶなら" summary card.
                               Rendered under the venue card as a folded
                               disclosure — client-side math on the already-

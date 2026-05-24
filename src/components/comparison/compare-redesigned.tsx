@@ -64,10 +64,14 @@ import {
  *     in gold which made 4-column matrices feel like a trophy shelf.
  */
 
-type OwnerFilter = "all" | "mine" | "partner" | "both";
+type OwnerFilter = "mine" | "partner" | "both";
 
+// Audit P1-17: dropped the "すべて" tab so this control matches
+// `<FavoriteFilter>` on /candidates (3 cells, in the same "自分 →
+// パートナー → おふたり" sequence). Two screens that look like the
+// same segmented control used to differ by one cell, which broke the
+// couple's mental model when jumping from /candidates into /compare.
 const OWNER_FILTERS: { id: OwnerFilter; label: string }[] = [
-  { id: "all", label: "すべて" },
   { id: "mine", label: "自分" },
   { id: "partner", label: "パートナー" },
   { id: "both", label: "おふたり" },
@@ -100,7 +104,7 @@ export function CompareRedesigned() {
   const [data, setData] = useState<UnifiedComparisonData | null>(null);
   const [insight, setInsight] = useState<MatrixInsight | null>(null);
   const [loading, setLoading] = useState(true);
-  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("mine");
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(initialVenueIds),
   );
@@ -222,7 +226,6 @@ export function CompareRedesigned() {
   // the new pool are dropped (render-phase reset, no effect cascade).
   const pool = useMemo(() => {
     if (!data) return [];
-    if (ownerFilter === "all") return data.venues;
     return data.venues.filter((v) => {
       const owners: FavoritedByMap[string] = data.favoritedBy[v.id] ?? [];
       if (ownerFilter === "mine") return owners.includes("me");
@@ -432,7 +435,11 @@ export function CompareRedesigned() {
   return (
     <div className="flex flex-col gap-4 pb-6">
       {/* Sticky filter bar: owner scope + selection counter + diff toggle */}
-      <div className="sticky top-0 z-20 space-y-3 bg-background/80 px-3 pb-2 pt-[calc(0.75rem+env(safe-area-inset-top))] backdrop-blur-xl">
+      {/* z-30: this is the topmost sticky on the compare screen. The matrix
+          header below also stickies but at z-10 so the venue thumbnails
+          tuck UNDER the filter bar instead of poking through (audit P0-8 —
+          previous z-20/z-20 collision made venue names half-disappear). */}
+      <div className="sticky top-0 z-30 space-y-3 bg-background/80 px-3 pb-2 pt-[calc(0.75rem+env(safe-area-inset-top))] backdrop-blur-xl">
         <div className="flex items-center justify-between gap-2">
           <div
             className="inline-flex gap-1 rounded-full bg-muted p-1"
@@ -499,9 +506,7 @@ export function CompareRedesigned() {
               ? "おふたりが共通で候補にしている式場はまだありません。"
               : ownerFilter === "partner"
                 ? "パートナーの候補はまだありません。"
-                : ownerFilter === "mine"
-                  ? "自分の候補はまだありません。"
-                  : "候補がまだありません。"}
+                : "自分の候補はまだありません。"}
           </p>
         </div>
       ) : (
@@ -657,11 +662,11 @@ export function CompareRedesigned() {
                   vertical scrolling through many dimensions keeps the
                   venue identity visible. */}
               <div
-                className="sticky top-0 z-20 grid items-end gap-0 border-b border-border bg-card"
+                className="sticky top-0 z-10 grid items-end gap-0 border-b border-border bg-card"
                 style={{ gridTemplateColumns: "var(--cmp-grid)" }}
               >
                 <div
-                  className="sticky left-0 z-30 bg-card px-3 py-3 text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+                  className="sticky left-0 z-20 bg-card px-3 py-3 text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
                   style={{ width: LABEL_COL_PX }}
                 >
                   Venue
@@ -858,6 +863,36 @@ export function CompareRedesigned() {
                   href: "/coach",
                 }))}
               />
+            </div>
+          )}
+
+          {/* Audit P0-7: explicit "now decide" exit. Without this, couples
+              who scroll to the end of compare have no on-screen route into
+              the Decision tab — the SegmentedControl that owns "決める"
+              is back at the top of the page, often several thousand pixels
+              away after a long compare session. Show the CTA only when the
+              compare has substance (>= 2 venues actually selected) so we
+              don't push someone toward decision before they've finished
+              comparing. */}
+          {selected.size >= 2 && (
+            <div className="mx-3">
+              <div className="rounded-2xl border border-[var(--gold-warm)]/40 bg-[var(--gold-subtle)] p-5 text-center">
+                <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--gold-warm)]">
+                  Next
+                </p>
+                <p className="mt-1 font-[family-name:var(--font-display)] text-[15px] font-light leading-snug text-foreground/90">
+                  {selected.size} 件、十分に比べました。
+                  <br />
+                  次は「決める」へ。
+                </p>
+                <Link
+                  href="/candidates?tab=decision"
+                  prefetch={true}
+                  className="mt-3 inline-flex min-h-11 items-center gap-1.5 rounded-full bg-primary px-6 text-sm font-medium text-primary-foreground transition-transform active:scale-[0.98]"
+                >
+                  ふたりで決める
+                </Link>
+              </div>
             </div>
           )}
         </>
