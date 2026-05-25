@@ -4,6 +4,7 @@
 // callers is the enforcement.
 
 import { cache } from "react";
+import { after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { prisma } from "@/server/db";
 import { recordAudit } from "@/server/audit";
@@ -199,22 +200,54 @@ export async function publishRealtimeEvent(
 
   // Audit P0-3: also fan the event out to Web Push so members who don't
   // have the tab open still hear about it. Best-effort — a failed push
-  // never blocks the broadcast path or the underlying DB write. Skips
-  // kinds that have no push mapping (e.g. venue_deleted until its copy
-  // table cell lands).
+  // never blocks the broadcast path or the underlying DB write.
+  //
+  // 2026-05-25 hotfix: deferred via `after()` to keep the function
+  // response immediate. Earlier we awaited dispatchRealtimeEvent inline,
+  // which awaits per-subscriber `webpush.sendNotification` HTTP calls;
+  // when a push endpoint hangs (= up to 30s each, multiplied by
+  // subscribers) the Vercel function hit its 60s timeout, the DB
+  // transaction never committed, and the user reported "deleted venue
+  // still shows up on /compare". `after()` runs the work AFTER the
+  // response is sent — the DB write is already committed, the push is
+  // pure notification side-effect, deferring is the right shape.
   const pushKind = PUSH_KIND_FOR[event.kind];
   if (pushKind) {
     try {
-      const venueName = await venueNameForPush(event);
-      await dispatchRealtimeEvent({
-        kind: pushKind,
-        projectId,
-        actorUserId: event.actor.userId,
-        scopeId: pushScopeIdFor(event, projectId),
-        venueName,
+      after(async () => {
+        try {
+          const venueName = await venueNameForPush(event);
+          await dispatchRealtimeEvent({
+            kind: pushKind,
+            projectId,
+            actorUserId: event.actor.userId,
+            scopeId: pushScopeIdFor(event, projectId),
+            venueName,
+          });
+        } catch (err) {
+          console.warn("[push] dispatchRealtimeEvent threw (deferred):", err);
+        }
       });
-    } catch (err) {
-      console.warn("[push] dispatchRealtimeEvent threw (suppressed):", err);
+    } catch {
+      // `after()` throws when called outside a request scope (e.g.
+      // inside a unit test that exercises this function without a
+      // surrounding Next.js function context). Fall back to inline
+      // fire-and-forget so the test path still doesn't block — and
+      // doesn't crash for the missing context.
+      void (async () => {
+        try {
+          const venueName = await venueNameForPush(event);
+          await dispatchRealtimeEvent({
+            kind: pushKind,
+            projectId,
+            actorUserId: event.actor.userId,
+            scopeId: pushScopeIdFor(event, projectId),
+            venueName,
+          });
+        } catch (err) {
+          console.warn("[push] dispatchRealtimeEvent threw (fallback):", err);
+        }
+      })();
     }
   }
 }
