@@ -41,13 +41,6 @@ const mockCustomChecklistItemCount = vi.fn();
 const mockCustomChecklistItemCreate = vi.fn();
 const mockCustomChecklistItemUpdate = vi.fn();
 const mockUserUpsert = vi.fn();
-// 2026-05-25 atomic upsert: saveChildRating + bulkSetDimensionRating
-// now use `tx.$executeRaw` with `INSERT ... ON CONFLICT DO UPDATE` to
-// avoid the SELECT-then-INSERT race that produced P2002 / P2025 toasts
-// in production. The mock just records the call so the suite can
-// assert "the action attempted a write" + that the rest of the
-// pipeline (authz, validation, member fetch) ran in the right order.
-const mockExecuteRaw = vi.fn().mockResolvedValue(1);
 
 const mockTransaction = vi.fn();
 
@@ -58,11 +51,8 @@ vi.mock("@/server/db", () => ({
       create: (...a: unknown[]) => mockProjectChecklistCreate(...a),
     },
     venueChecklistAnswer: {
-      // Retained for the few tests that still inspect this — the
-      // production code path goes through $executeRaw below.
       upsert: (...a: unknown[]) => mockVenueChecklistAnswerUpsert(...a),
     },
-    $executeRaw: (...a: unknown[]) => mockExecuteRaw(...a),
     customChecklistItem: {
       findUnique: (...a: unknown[]) => mockCustomChecklistItemFindUnique(...a),
       count: (...a: unknown[]) => mockCustomChecklistItemCount(...a),
@@ -130,7 +120,6 @@ beforeEach(() => {
   mockRequireVenueAccess.mockResolvedValue({ projectId: PROJECT_ID });
   mockRequireProjectMembership.mockResolvedValue({ projectId: PROJECT_ID });
   mockUserUpsert.mockResolvedValue({ id: USER_ID });
-  mockExecuteRaw.mockResolvedValue(1);
   // Provide a default transaction implementation that simply invokes
   // the callback with the same per-model mocks. Individual tests can
   // override when they need to assert tx-specific behaviour.
@@ -143,10 +132,6 @@ beforeEach(() => {
       venueChecklistAnswer: {
         upsert: mockVenueChecklistAnswerUpsert,
       },
-      // The atomic-upsert path uses $executeRaw inside the tx — wire
-      // the same shared mock so happy-path assertions still see the
-      // call.
-      $executeRaw: mockExecuteRaw,
     };
     return cb(tx);
   });
@@ -197,7 +182,7 @@ describe("saveChildRating — validation rejects before Prisma", () => {
     // 2026-05-25: production write goes through $executeRaw with
     // `INSERT ... ON CONFLICT DO UPDATE` for atomicity. Same intent
     // as the legacy upsert mock — assert "one write happened".
-    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mockVenueChecklistAnswerUpsert).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -229,11 +214,11 @@ describe("saveChildRating — authz contract", () => {
       itemId: PRESET_ITEM_ID,
       score: 4.0,
     });
-    // The auth check must fire first — assert call order against the
-    // atomic $executeRaw call site (replaces the legacy upsert call).
+    // The auth check must fire first — assert call order.
     const userCallOrder = mockRequireUser.mock.invocationCallOrder[0];
-    const writeCallOrder = mockExecuteRaw.mock.invocationCallOrder[0];
-    expect(userCallOrder).toBeLessThan(writeCallOrder);
+    const upsertCallOrder =
+      mockVenueChecklistAnswerUpsert.mock.invocationCallOrder[0];
+    expect(userCallOrder).toBeLessThan(upsertCallOrder);
   });
 });
 
@@ -247,7 +232,7 @@ describe("saveChildRating — preset vs custom item resolution", () => {
     });
     expect(result.success).toBe(true);
     expect(mockProjectChecklistCreate).not.toHaveBeenCalled();
-    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mockVenueChecklistAnswerUpsert).toHaveBeenCalledTimes(1);
   });
 
   it("preset item with no ProjectChecklist row yet creates one", async () => {
@@ -260,7 +245,7 @@ describe("saveChildRating — preset vs custom item resolution", () => {
     });
     expect(result.success).toBe(true);
     expect(mockProjectChecklistCreate).toHaveBeenCalledTimes(1);
-    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mockVenueChecklistAnswerUpsert).toHaveBeenCalledTimes(1);
   });
 
   it("unknown itemId that is neither preset nor custom returns failure with no DB write", async () => {
@@ -358,8 +343,7 @@ describe("bulkSetDimensionRating — validation + authz", () => {
     });
     expect(result.success).toBe(true);
     expect(mockTransaction).toHaveBeenCalledTimes(1);
-    // 2 itemIds → 2 atomic $executeRaw INSERT...ON CONFLICT statements.
-    expect(mockExecuteRaw).toHaveBeenCalledTimes(2);
+    expect(mockVenueChecklistAnswerUpsert).toHaveBeenCalledTimes(2);
   });
 });
 

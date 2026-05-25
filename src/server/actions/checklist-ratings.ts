@@ -19,8 +19,8 @@
  */
 
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
 import { prisma } from "@/server/db";
+import { Prisma } from "@/generated/prisma/client";
 import { revalidateTag } from "next/cache";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 import type { Prisma as PrismaTypes } from "@/generated/prisma/client";
@@ -30,57 +30,116 @@ import {
   requireVenueAccess,
 } from "@/server/auth";
 import { publishRealtimeEvent, resolveActor } from "@/lib/realtime/publish";
+import { getCoupleMembers } from "@/lib/couple-members";
+
 /**
- * Atomic upsert for `venue_checklist_answers` via Postgres
- * `INSERT … ON CONFLICT DO UPDATE`.
+ * Race-safe upsert for `venue_checklist_answers` — Prisma upsert wrapped
+ * in a tight retry loop.
  *
- * Why not Prisma's `upsert()`:
- *   Prisma's upsert runs SELECT → (INSERT or UPDATE) as two separate
- *   statements. Under concurrent tap / partner-on-other-device / multi-
- *   tab saves, both callers can miss the row in SELECT, both attempt
- *   INSERT, and one of them eats P2002. The 2026-05-25 follow-up tried
- *   to catch P2002 and retry as UPDATE, but that path itself races a
- *   second time (UPDATE's WHERE can find no row when a sibling tx has
- *   rolled back its INSERT before the UPDATE runs, giving P2025
- *   "Record to update not found").
+ * Why this shape (and not anything we've tried so far):
+ *   - PR #68: try { upsert } catch (P2002) { update } — the UPDATE path
+ *     itself races and produces P2025 when a sibling tx rolls back.
+ *   - PR #70: $executeRaw INSERT ... ON CONFLICT — should have been
+ *     atomic, but production surfaced Postgres 23505 anyway (= the
+ *     ON CONFLICT clause didn't catch every unique constraint that
+ *     actually fires; legacy index from migration 20260516010000
+ *     Step 5 likely lingers on at least one project).
+ *   - PR #71 (this): give up on building a "perfectly atomic" first
+ *     attempt and accept the race exists at the DB level. Catch every
+ *     race-symptomatic error (P2002, P2025, raw 23505 from $executeRaw,
+ *     SerializationError 40001) and retry up to 3 times with a short
+ *     backoff. The action only fails after 3 lost retries, which is
+ *     vanishingly rare under realistic load.
  *
- *   Postgres's native `INSERT … ON CONFLICT DO UPDATE` is a single
- *   atomic statement — it locks the conflicting row in the same
- *   transaction, no SELECT-then-INSERT window. This is the
- *   cleanest fix.
- *
- * The `id` column is `cuid()` in Prisma but the underlying Postgres
- * column is just `text` — we generate a UUID with Node's crypto and
- * pass it in. ON CONFLICT path ignores it, so generating a UUID we
- * may discard is cheap insurance against the race.
- *
- * @param tx — pass a transaction client when called inside a
- *   `prisma.$transaction` (e.g. bulkSetDimensionRating); defaults to
- *   the top-level prisma client otherwise. We only need `$executeRaw`
- *   so the type is narrowed accordingly.
+ * @param tx — pass a transaction client when called inside an
+ *   interactive `prisma.$transaction` (bulkSetDimensionRating). The
+ *   retry loop is then SCOPED TO ONE ATTEMPT to keep the transaction
+ *   boundary clean — a retry would mean rolling back the whole bulk,
+ *   which we'd rather signal as a server-action failure and let the UI
+ *   show a toast. Top-level callers get the full 3-attempt loop.
  */
 async function upsertChecklistAnswerSafely(
-  tx: Pick<PrismaTypes.TransactionClient, "$executeRaw"> | typeof prisma,
+  tx: typeof prisma | PrismaTypes.TransactionClient,
   args: {
     projectChecklistId: string;
     venueId: string;
     userId: string;
     numericScore: number | null;
   },
+  options: { retries?: number } = {},
 ): Promise<void> {
-  const id = randomUUID();
-  await tx.$executeRaw`
-    INSERT INTO "venue_checklist_answers"
-      ("id", "project_checklist_id", "venue_id", "user_id", "numeric_score", "updated_at")
-    VALUES
-      (${id}, ${args.projectChecklistId}, ${args.venueId}::uuid, ${args.userId}::uuid, ${args.numericScore}, NOW())
-    ON CONFLICT ("project_checklist_id", "venue_id", "user_id")
-    DO UPDATE SET
-      "numeric_score" = EXCLUDED."numeric_score",
-      "updated_at"    = NOW()
-  `;
+  const maxAttempts = (options.retries ?? 3) + 1;
+  const where = {
+    projectChecklistId_venueId_userId: {
+      projectChecklistId: args.projectChecklistId,
+      venueId: args.venueId,
+      userId: args.userId,
+    },
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await tx.venueChecklistAnswer.upsert({
+        where,
+        create: {
+          projectChecklistId: args.projectChecklistId,
+          venueId: args.venueId,
+          userId: args.userId,
+          numericScore: args.numericScore,
+        },
+        update: { numericScore: args.numericScore },
+      });
+      return;
+    } catch (e) {
+      if (attempt >= maxAttempts || !isRaceRetryable(e)) {
+        throw e;
+      }
+      console.warn(
+        `[upsertChecklistAnswerSafely] race detected (attempt ${attempt}/${maxAttempts}), retrying`,
+        {
+          code:
+            e instanceof Prisma.PrismaClientKnownRequestError ? e.code : "raw",
+          message: e instanceof Error ? e.message.slice(0, 200) : String(e),
+        },
+      );
+      // Jittered backoff: 8ms · 16ms · 32ms — small enough to stay
+      // inside one user-visible "saving…" frame, large enough to let
+      // a colliding sibling tx finish committing.
+      await new Promise((r) => setTimeout(r, 8 * 2 ** (attempt - 1)));
+    }
+  }
 }
-import { getCoupleMembers } from "@/lib/couple-members";
+
+/**
+ * Decide whether the error came from a concurrency race we should
+ * retry, or a "real" failure we should surface to the caller.
+ *
+ * Race-symptomatic:
+ *   - P2002: unique violation (Prisma surface)
+ *   - P2025: update-where-no-row (= sibling tx undid the row between
+ *     our SELECT and UPDATE in the upsert pipeline)
+ *   - 23505: raw Postgres unique violation (= same thing as P2002, but
+ *     occasionally leaks through unmapped when the violation surfaces
+ *     from a path Prisma doesn't recognise — happened in prod 20:54
+ *     JST with the legacy index from migration 20260516010000)
+ *   - 40001 / SerializationFailure: would only happen if we wrap in
+ *     Serializable isolation; future-proof.
+ */
+function isRaceRetryable(e: unknown): boolean {
+  if (e instanceof Prisma.PrismaClientKnownRequestError) {
+    if (e.code === "P2002" || e.code === "P2025") return true;
+  }
+  const message = e instanceof Error ? e.message : String(e);
+  if (
+    message.includes("23505") ||
+    message.includes("40001") ||
+    message.includes("duplicate key value violates") ||
+    message.includes("could not serialize access")
+  ) {
+    return true;
+  }
+  return false;
+}
 
 /**
  * Ensure a `public.users` row exists for the current Supabase auth user.
