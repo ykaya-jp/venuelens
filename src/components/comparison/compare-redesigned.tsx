@@ -751,7 +751,19 @@ export function CompareRedesigned() {
                 ))}
               </div>
 
-            {/* Total row */}
+            {/* Total row — User feedback 2026-05-25 23:xx JST:
+                "俺と妻で同じ点になっておかしい". The legacy `data.totalScore`
+                is VenueScore (source=user_rating) which is a couple-wide
+                aggregate — same number for everyone. Recompute per-owner
+                from `partnerMap` (per-dimension rating per side) so the
+                ownerFilter actually drives the displayed number:
+                  - mine   → 自分の 8 次元 score の平均
+                  - partner → 相手の 8 次元 score の平均
+                  - both   → 各次元で 2 人の平均 → 8 次元で再平均 (= couple)
+                null → composite fallback (= 既存 totalScore) で legacy
+                rows (= partnerMap 未 populate) でも数字が出る。
+                "細かい項目も含めた総合" は child item 集約が必要なので
+                別 PR で実装。今 PR では「大項目総合 × 3 owner」のみ。 */}
             <div
               className="grid items-center gap-0 border-b border-border bg-[color-mix(in_oklab,var(--gold-warm)_6%,transparent)]"
               style={{ gridTemplateColumns: "var(--cmp-grid)" }}
@@ -760,10 +772,23 @@ export function CompareRedesigned() {
                 className="sticky left-0 z-10 bg-[color-mix(in_oklab,var(--gold-warm)_6%,var(--card))] px-3 py-2.5 text-[12px] font-medium text-foreground/85"
                 style={{ width: LABEL_COL_PX }}
               >
-                総合
+                <span className="block">総合</span>
+                <span className="block text-[9.5px] font-normal text-muted-foreground">
+                  大項目から
+                  {ownerFilter === "mine"
+                    ? " · 自分"
+                    : ownerFilter === "partner"
+                      ? " · パートナー"
+                      : " · ふたり"}
+                </span>
               </div>
               {venueIds.map((id) => {
-                const score = data.totalScore[id] ?? null;
+                const score = computeOwnerTotal(
+                  id,
+                  ownerFilter,
+                  partnerMap,
+                  data.totalScore[id] ?? null,
+                );
                 return (
                   <div
                     key={id}
@@ -1033,6 +1058,71 @@ export function CompareRedesigned() {
  *   - 子の編集導線は /venues/[id]/impression に集約。 比較画面は display
  *     only。
  */
+/** Per-owner total score helper for the compare matrix's 総合 row.
+ *
+ *  - "mine"   → mean of viewer's per-dim ratings (= partnerMap.own values)
+ *  - "partner" → mean of the other member's per-dim ratings
+ *  - "both"   → for each dim, average whichever member has rated, then
+ *               mean across dims (= equivalent to mean of all cells)
+ *
+ *  When `partnerMap[venueId]` is undefined (partner data not yet fetched
+ *  or unauthenticated edge case) the function returns `fallback` — the
+ *  legacy couple-wide composite — so the cell never goes blank purely
+ *  because of a fetch race. */
+function computeOwnerTotal(
+  venueId: string,
+  ownerFilter: OwnerFilter,
+  partnerMap: Record<
+    string,
+    {
+      own: Record<string, number> | null;
+      other: Record<string, number> | null;
+    }
+  >,
+  fallback: number | null,
+): number | null {
+  const couple = partnerMap[venueId];
+  if (!couple) return fallback;
+  const own = couple.own ?? {};
+  const other = couple.other ?? {};
+
+  const mean = (values: number[]): number | null => {
+    if (values.length === 0) return null;
+    return (
+      Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10
+    );
+  };
+
+  if (ownerFilter === "mine") {
+    return mean(
+      Object.values(own).filter(
+        (v): v is number => typeof v === "number" && Number.isFinite(v),
+      ),
+    );
+  }
+  if (ownerFilter === "partner") {
+    return mean(
+      Object.values(other).filter(
+        (v): v is number => typeof v === "number" && Number.isFinite(v),
+      ),
+    );
+  }
+  // both: per-dim average of whichever members rated, then mean across dims
+  const dims = new Set<string>([...Object.keys(own), ...Object.keys(other)]);
+  const perDim: number[] = [];
+  for (const d of dims) {
+    const o = own[d];
+    const p = other[d];
+    const vals = [o, p].filter(
+      (v): v is number => typeof v === "number" && Number.isFinite(v),
+    );
+    if (vals.length > 0) {
+      perDim.push(vals.reduce((a, b) => a + b, 0) / vals.length);
+    }
+  }
+  return mean(perDim);
+}
+
 function ChildItemRows({
   items,
   venueIds,
