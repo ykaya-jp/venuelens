@@ -850,10 +850,26 @@ export function CompareRedesigned() {
                       const couple = partnerMap[venueId];
                       const ownScore = couple?.own?.[row.dim.id] ?? null;
                       const partnerScore = couple?.other?.[row.dim.id] ?? null;
+                      // User feedback 2026-05-25 22:35 JST: the ownerFilter
+                      // toggle ("自分 / パートナー / おふたり") used to swap
+                      // only the candidate pool — the displayed dimension
+                      // score stayed the viewer's couple-composite. Now
+                      // the main score also switches: own for "mine",
+                      // partner for "partner", and the composite (= the
+                      // `score` from row.scores, both members' average)
+                      // for "both". null fallback to composite so the
+                      // bar still shows when the chosen side hasn't
+                      // graded yet.
+                      const displayScore =
+                        ownerFilter === "mine"
+                          ? (ownScore ?? score)
+                          : ownerFilter === "partner"
+                            ? (partnerScore ?? score)
+                            : score;
                       return (
                         <DimensionCell
                           key={venueId}
-                          score={score}
+                          score={displayScore}
                           isWinner={advantageWinner}
                           strong={isStrong}
                           ownScore={ownScore}
@@ -1034,7 +1050,25 @@ function ChildItemRows({
   venueIds: string[];
   diffOnly: boolean;
 }) {
-  const filtered = diffOnly ? items.filter((i) => i.hasDifference) : items;
+  // User feedback 2026-05-25 22:35 JST: server-computed `hasDifference`
+  // can drift from what the cell actually shows (Decimal(2,1) →
+  // Number(4.0) precision quirks, template-literal serialization of
+  // numerics rounding off trailing zeros, etc.). When diffOnly is on,
+  // recompute the diff from the actually-rendered numbers so "全
+  // venue で同じ score" は確実に hide される。
+  const recomputeHasDiff = (i: (typeof items)[number]): boolean => {
+    const scores = venueIds.map((vid) => {
+      const s = i.answers[vid]?.numericScore;
+      return s === null || s === undefined ? null : Math.round(s * 10) / 10;
+    });
+    const statuses = venueIds.map((vid) => i.answers[vid]?.status ?? null);
+    const tuples = scores.map((s, idx) => `${statuses[idx] ?? "—"}|${s ?? "—"}`);
+    const nonEmpty = tuples.filter((t) => t !== "—|—");
+    return nonEmpty.length >= 2 && new Set(nonEmpty).size > 1;
+  };
+  const filtered = diffOnly
+    ? items.filter((i) => recomputeHasDiff(i))
+    : items;
   if (filtered.length === 0) return null;
   return (
     <>
