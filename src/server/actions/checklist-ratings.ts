@@ -177,14 +177,27 @@ function handleServerActionError(
   if (e instanceof Error && typeof (e as { digest?: unknown }).digest === "string" && (e as unknown as { digest: string }).digest.startsWith("NEXT_REDIRECT")) {
     throw e;
   }
+  const code = (e as { code?: unknown }).code;
+  // 2026-05-25 diagnostic: pull `meta` out of Prisma errors so the
+  // P2002 `target` column list shows up in both the server log AND
+  // the client toast. Without this we're guessing which unique
+  // constraint fires — the production scenario "妻が評価してある式場
+  // で 1 発目から失敗" needs the target to confirm whether it's the
+  // expected (pc, venue, user) constraint (= surprising bug somewhere
+  // else) or a legacy (pc, venue) constraint (= stale schema state).
+  const meta = (e as { meta?: unknown }).meta;
   const errInfo =
     e instanceof Error
-      ? { name: e.name, message: e.message, stack: e.stack, code: (e as { code?: unknown }).code }
-      : { message: String(e) };
+      ? { name: e.name, message: e.message, stack: e.stack, code, meta }
+      : { message: String(e), code, meta };
   console.error(`[${where}] failed`, { context, error: errInfo });
+  const metaSuffix =
+    meta && typeof meta === "object"
+      ? ` [${JSON.stringify(meta).slice(0, 200)}]`
+      : "";
   const userMessage =
     e instanceof Error && e.message
-      ? `保存に失敗しました: ${e.message.slice(0, 120)}`
+      ? `保存に失敗しました (${String(code ?? "?")}): ${e.message.slice(0, 200)}${metaSuffix}`
       : "保存中にエラーが発生しました。時間をおいて再度お試しください。";
   return {
     success: false,
